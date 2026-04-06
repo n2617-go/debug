@@ -2,124 +2,127 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import datetime, timedelta
+import pytz
 
 # 頁面設定
-st.set_page_config(page_title="台指 VIX 監控", layout="wide")
+st.set_page_config(page_title="台指 VIXTWN 監控", layout="wide")
 
+tz_tw = pytz.timezone('Asia/Taipei')
 FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
 
 
-def fetch_vixtwn_history():
+def fetch_vixtwn():
     """
-    用 FinMind REST API 抓台指 VIX 歷史日線。
-    dataset 優先嘗試 TaiwanFuturesDaily（data_id=VIX），
-    備援嘗試 TaiwanOptionDaily（data_id=TXO，VIX 相關）。
-    回傳 DataFrame，欄位：Date（index）、VIX；失敗回傳 empty DataFrame 與錯誤訊息。
+    用 FinMind 公開 REST API 抓台指 VIX 日線。
+    dataset: TaiwanStockIndex, data_id: VIX
+    回傳: (DataFrame or None, 錯誤訊息 list)
     """
-    start_dt = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
     errors = []
+    start_dt = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
 
-    # --- 方案 A：TaiwanFuturesDaily, data_id=VIX ---
     try:
         params = {
-            "dataset": "TaiwanFuturesDaily",
+            "dataset": "TaiwanStockIndex",
             "data_id": "VIX",
             "start_date": start_dt,
         }
         res = requests.get(FINMIND_URL, params=params, timeout=15)
         res.raise_for_status()
         payload = res.json()
+        msg = payload.get("msg", "")
         records = payload.get("data", [])
+
         if records:
             df = pd.DataFrame(records)
-            df['Date'] = pd.to_datetime(df['date']).dt.date
-            df = df.sort_values('Date').drop_duplicates('Date')
-            df = df[['Date', 'close']].rename(columns={'close': 'VIX'}).set_index('Date')
+            # FinMind TaiwanStockIndex 欄位：date, price (或 close)
+            price_col = "price" if "price" in df.columns else "close"
+            df["Date"] = pd.to_datetime(df["date"])
+            df = df[["Date", price_col]].rename(columns={price_col: "VIX"})
+            df = df.sort_values("Date").drop_duplicates("Date").set_index("Date")
             return df, []
         else:
-            errors.append(f"方案A FinMind TaiwanFuturesDaily/VIX：API 回傳空資料（msg: {payload.get('msg','')}）")
+            errors.append(f"FinMind TaiwanStockIndex/VIX 回傳空資料（API msg: {msg}）")
+
+    except requests.exceptions.HTTPError as e:
+        errors.append(f"HTTP 錯誤 {e.response.status_code}：{e}")
+    except requests.exceptions.Timeout:
+        errors.append("連線逾時（timeout），請稍後再試")
     except Exception as e:
-        errors.append(f"方案A 例外：{type(e).__name__}: {e}")
+        errors.append(f"未預期錯誤：{type(e).__name__}: {e}")
 
-    # --- 方案 B：TaiwanVariousIndicators5Seconds, data_id=VIXTWN ---
-    try:
-        start_dt_short = (datetime.now() - timedelta(days=5)).strftime('%Y-%m-%d')
-        params = {
-            "dataset": "TaiwanVariousIndicators5Seconds",
-            "data_id": "VIXTWN",
-            "start_date": start_dt_short,
-        }
-        res = requests.get(FINMIND_URL, params=params, timeout=15)
-        res.raise_for_status()
-        payload = res.json()
-        records = payload.get("data", [])
-        if records:
-            df = pd.DataFrame(records)
-            df['Date'] = pd.to_datetime(df['date']).dt.date
-            df = df.sort_values('Date').drop_duplicates('Date')
-            price_col = 'price' if 'price' in df.columns else df.columns[-1]
-            df = df[['Date', price_col]].rename(columns={price_col: 'VIX'}).set_index('Date')
-            return df, []
-        else:
-            errors.append(f"方案B FinMind TaiwanVariousIndicators5Seconds/VIXTWN：API 回傳空資料（msg: {payload.get('msg','')}）")
-    except Exception as e:
-        errors.append(f"方案B 例外：{type(e).__name__}: {e}")
-
-    return pd.DataFrame(), errors
+    return None, errors
 
 
-# --- UI 呈現 ---
-st.title("🛡️ 台指 VIXTWN 即時監控")
-st.caption(f"系統檢查時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+# --- UI ---
+st.title("🛡️ 台指 VIXTWN 日線監控")
+st.caption(f"系統時間：{datetime.now(tz_tw).strftime('%Y-%m-%d %H:%M:%S')} (台北)")
 
-with st.spinner('正在同步數據...'):
-    df_hist, errors = fetch_vixtwn_history()
+# 初始化 session_state
+if "df_vix" not in st.session_state:
+    st.session_state.df_vix = None
+if "fetch_errors" not in st.session_state:
+    st.session_state.fetch_errors = []
+if "last_update" not in st.session_state:
+    st.session_state.last_update = None
 
-# 錯誤訊息永遠顯示（不吃掉）
-if errors:
-    with st.expander("⚠️ 偵錯詳情（點開查看）", expanded=True):
-        for e in errors:
+# 手動更新按鈕
+if st.button("🔄 更新 VIXTWN 數據"):
+    with st.spinner("正在從 FinMind 抓取資料..."):
+        df, errors = fetch_vixtwn()
+        st.session_state.df_vix = df
+        st.session_state.fetch_errors = errors
+        st.session_state.last_update = datetime.now(tz_tw).strftime("%H:%M:%S")
+
+# 顯示錯誤（若有）
+if st.session_state.fetch_errors:
+    with st.expander("⚠️ 偵錯詳情", expanded=True):
+        for e in st.session_state.fetch_errors:
             st.warning(e)
 
-if not df_hist.empty:
-    df_hist.index = pd.to_datetime(df_hist.index)
+# 顯示數據
+df = st.session_state.df_vix
+if df is not None and not df.empty:
+    st.caption(f"最後更新：{st.session_state.last_update}")
 
-    current_vix = float(df_hist['VIX'].iloc[-1])
-    last_date = df_hist.index[-1]
+    current_vix = float(df["VIX"].iloc[-1])
+    ref_vix = float(df["VIX"].iloc[-2]) if len(df) > 1 else current_vix
+    delta = current_vix - ref_vix
+    last_date = df.index[-1].strftime("%Y-%m-%d")
 
-    # 昨日基準（倒數第二筆，若只有一筆則用同一筆）
-    ref_close = float(df_hist['VIX'].iloc[-2]) if len(df_hist) > 1 else current_vix
-    delta = current_vix - ref_close
-
-    # 1. 頂部看板
+    # 看板
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric(
-            f"VIXTWN（{last_date.strftime('%Y-%m-%d')}）",
-            f"{current_vix:.2f}",
-            f"{delta:+.2f}"
+            label=f"VIXTWN 收盤（{last_date}）",
+            value=f"{current_vix:.2f}",
+            delta=f"{delta:+.2f}"
         )
     with col2:
-        if current_vix > 25:
+        if current_vix >= 30:
+            st.error("📊 市場情緒：極度恐慌")
+        elif current_vix >= 20:
             st.warning("📊 市場情緒：恐慌感上升")
         else:
             st.success("📊 市場情緒：相對穩定")
     with col3:
-        if st.button("🔄 手動刷新"):
-            st.rerun()
+        st.metric("數據筆數", f"{len(df)} 天", "近 60 日")
 
     st.divider()
 
-    # 2. 歷史日線表格
-    st.subheader("歷史日線紀錄")
+    # 走勢圖
+    st.subheader("📈 近 60 日走勢")
+    st.line_chart(df["VIX"])
+
+    # 歷史表格
+    st.subheader("📋 歷史日線")
     st.dataframe(
-        df_hist.sort_index(ascending=False).style.format("{:.2f}"),
+        df.sort_index(ascending=False).style.format("{:.2f}"),
         use_container_width=True
     )
 
-    # 3. 折線圖
-    st.subheader("歷史走勢圖")
-    st.line_chart(df_hist['VIX'])
-
+elif st.session_state.last_update is not None:
+    # 按過按鈕但資料是空的
+    st.error("❌ 抓取失敗，請查看上方偵錯詳情。")
 else:
-    st.error("❌ 兩個數據來源均抓取失敗，請查看上方偵錯詳情。")
+    # 還沒按過按鈕
+    st.info("👆 請按「更新 VIXTWN 數據」按鈕載入資料。")
