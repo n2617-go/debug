@@ -34,53 +34,51 @@ def save_json(file, data):
     with open(file, "w") as f:
         json.dump(data, f)
 
-# --- 2. 披薩指數核心技術：5x 超解析度 + 反相辨識 ---
+# --- 2. 核心技術：導航欄 5x 強化辨識 ---
 
 def get_pizza_intel_pro():
     """
-    實施：5倍放大 + 色彩反轉強化 + 誤判字元容錯規則
+    實施：5x 放大 + 色彩反轉 + 精準 Regex 補漏
     """
     lvl, pct = 1, 0.0
     raw_debug_text = ""
     
-    status = st.status("🍕 正在啟動高倍率 OCR 偵察...", expanded=True)
+    status = st.status("🍕 正在實施高倍率影像偵察...", expanded=True)
     try:
         with sync_playwright() as p:
-            status.write("1. 正在對準 WorldMonitor 導航欄...")
+            status.write("1. 正在同步 WorldMonitor 數據...")
             browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu'])
             page = browser.new_page(viewport={'width': 1920, 'height': 1080})
             page.goto("https://worldmonitor.app/", wait_until="domcontentloaded", timeout=60000)
-            time.sleep(7) # 給予充足時間讓動態數字渲染
+            time.sleep(8) # 確保紅底數據完全渲染
             
-            # 2. 精準擷取包含 DEFCON 的右側區域
-            status.write("2. 執行 5x 像素擴展與色彩反轉...")
-            screenshot = page.screenshot(clip={'x': 1100, 'y': 0, 'width': 820, 'height': 100})
+            status.write("2. 執行局部 5x 像素擴展與反相處理...")
+            # 精準裁切右側 DEFCON 區域 (座標根據 13.1 調整)
+            screenshot = page.screenshot(clip={'x': 1050, 'y': 20, 'width': 850, 'height': 100})
             browser.close()
             
-            # --- 核心影像處理組件 ---
+            # --- 核心處理技術 ---
             img = Image.open(io.BytesIO(screenshot)).convert('L')
-            # 放大 5 倍增加邊緣細節
+            # 5 倍放大增加細節
             img = img.resize((img.width * 5, img.height * 5), Image.Resampling.LANCZOS)
-            # 色彩反轉：讓紅底白字變白底黑字，大幅提升 OCR 成功率
+            # 色彩反轉：紅底變淺，白字變黑
             img = ImageOps.invert(img)
-            # 極高對比強化
-            img = ImageEnhance.Contrast(img).enhance(6.0)
-            img = ImageEnhance.Sharpness(img).enhance(3.0)
+            # 極高對比與銳利化
+            img = ImageEnhance.Contrast(img).enhance(6.5)
+            img = ImageEnhance.Sharpness(img).enhance(4.0)
             
-            # 執行 OCR 辨識
+            # OCR 辨識
             raw_debug_text = pytesseract.image_to_string(img, config='--psm 6').strip()
             
-            status.write("3. 執行多重數據補漏邏輯...")
-            # 容錯 Regex：包含對 GD 20» 的自動修正
-            # 規則：尋找 defcon 或 gd 字樣後的數字
-            lvl_m = re.search(r'(?:defcon|gd|d\w+n|20»)\s*[:|l|!|i]?\s*(\d)', raw_debug_text, re.IGNORECASE)
-            # 尋找百分比
+            status.write("3. 執行多重 Regex 補漏與容錯...")
+            # Regex 容錯：包含對 GD/DEF/DFF 的廣義識別
+            lvl_m = re.search(r'(?:defcon|gd|d\w+n|d\s*c|20)\s*[:|l|!|i]?\s*(\d)', raw_debug_text, re.IGNORECASE)
             pct_m = re.search(r'(\d+)\s*%', raw_debug_text)
             
             if lvl_m: lvl = int(lvl_m.group(1))
             if pct_m: pct = float(pct_m.group(1))
             
-            status.update(label=f"✅ 偵察完成 (讀取到: {lvl} / {pct}%)", state="complete", expanded=False)
+            status.update(label=f"✅ 偵察完成 (讀取結果: {lvl})", state="complete", expanded=False)
             return lvl, pct, raw_debug_text
     except Exception as e:
         status.update(label=f"❌ 偵察失敗: {e}", state="error")
@@ -89,7 +87,6 @@ def get_pizza_intel_pro():
 # --- 3. VIX 物理重擊 (座標 465, 960) ---
 
 def fetch_vixtwn_physical():
-    """精準座標物理重擊"""
     url = "https://mis.taifex.com.tw/futures/VolatilityQuotes/"
     vix_val, shot = "N/A", None
     try:
@@ -98,7 +95,7 @@ def fetch_vixtwn_physical():
             page = browser.new_page(viewport={'width': 1280, 'height': 800})
             page.goto(url, wait_until="networkidle", timeout=60000)
             time.sleep(5)
-            # 擊中截圖 1000028179.jpg 的橘色按鈕
+            # 擊中橘色按鈕座標
             page.mouse.click(465, 960) 
             page.evaluate("""() => { const b = Array.from(document.querySelectorAll('button')).find(x => x.innerText.includes('接受') || x.className.includes('orange')); if(b) b.click(); }""")
             time.sleep(8)
@@ -119,8 +116,7 @@ st.title("🛡️ Global Intel Center")
 # 披薩區
 st.subheader("🍕 五角大廈披薩情報")
 saved_p = load_json(PIZZA_FILE, {"lvl": 1, "pct": 0, "time": "尚未更新", "raw": "無資料"})
-
-if st.button("🛰️ 啟動披薩技術更新 (高倍率反相)", use_container_width=True):
+if st.button("🛰️ 啟動高倍率偵察 (紅底反相強化)", use_container_width=True):
     lvl, pct, raw = get_pizza_intel_pro()
     if lvl is not None:
         saved_p = {"lvl": lvl, "pct": pct, "raw": raw, "time": datetime.now(tz_tw).strftime("%H:%M:%S")}
@@ -131,26 +127,25 @@ st.markdown(f"""
     <div style="background-color:#000; border-radius:12px; padding:20px; border:1px solid #333; text-align:center;">
         <span style="color:#888;">DEFCON</span> <b style="font-size:42px; color:#FF4B4B;">{saved_p['lvl']}</b>
         <span style="margin: 0 20px; color:#444;">|</span>
-        <span style="color:#888;">PIZZA INDEX</span> <b style="font-size:42px; color:#FF4B4B;">{int(saved_p['pct'])}%</b>
-        <p style="font-size:10px; color:#666; margin-top:10px;">最後偵察時間：{saved_p['time']}</p>
+        <span style="color:#888;">INDEX</span> <b style="font-size:42px; color:#FF4B4B;">{int(saved_p['pct'])}%</b>
+        <p style="font-size:10px; color:#666; margin-top:10px;">數據時間：{saved_p['time']}</p>
     </div>
 """, unsafe_allow_html=True)
 
-with st.expander("🕵️ 查看 OCR 原始偵察內容 (Debug)"):
-    st.code(saved_p.get("raw", "尚未執行"))
+with st.expander("🕵️ 查看 OCR 原始日誌"):
+    st.code(saved_p.get("raw", "尚未執行偵察"))
 
 # 市場區
 st.divider()
 st.subheader("📉 全球市場恐慌監控")
 saved_m = load_json(MARKET_FILE, {"v_us": "N/A", "v_tw": "N/A", "v_crypto": "N/A", "time": "尚未更新"})
-
-if st.button("📊 全球數據同步重擊", use_container_width=True):
+if st.button("📊 全球數據物理重擊", use_container_width=True):
     v_us = "N/A"
     try: v_us = round(yf.Ticker("^VIX").history(period="10d")['Close'].dropna().iloc[-1], 2)
     except: pass
     v_tw, shot = fetch_vixtwn_physical()
     if shot: st.session_state['last_shot'] = shot
-    v_crypto = "N/A"
+    v_crypto = "N/get"
     try: v_crypto = requests.get("https://api.alternative.me/fng/").json()['data'][0]['value']
     except: pass
     saved_m = {"v_us": v_us, "v_tw": v_tw, "v_crypto": v_crypto, "time": datetime.now(tz_tw).strftime("%H:%M:%S")}
