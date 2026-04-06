@@ -1,109 +1,90 @@
 import streamlit as st
 import pandas as pd
-import requests
 import yfinance as yf
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # 頁面設定
-st.set_page_config(page_title="台指 VIX 官方數據監控系統", layout="wide")
+st.set_page_config(page_title="台指 VIX 長假監控版", layout="wide")
 
-def get_vix_comprehensive():
+def get_vix_data_robust():
     """
-    雙重數據源抓取邏輯：
-    1. 優先：期交所 OpenAPI (DailyVIX)
-    2. 備援：yfinance (^VIXTWN)
+    最強容錯抓取：自動回溯長假，抓取最近一個真實交易日
     """
-    # --- 來源 A: 期交所 OpenAPI ---
+    ticker = "^VIXTWN"
     try:
-        url = "https://openapi.taifex.com.tw/v1/DailyVIX"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        response = requests.get(url, headers=headers, timeout=10)
+        # 抓取 15 天確保涵蓋所有長假 (如過年、清明)
+        df = yf.download(ticker, period="15d", interval="1d", progress=False)
         
-        if response.status_code == 200 and "application/json" in response.headers.get("Content-Type", "").lower():
-            data = response.json()
-            df_oa = pd.DataFrame(data)
-            if 'Date' in df_oa.columns and 'ClosePrice' in df_oa.columns:
-                df_oa['Date'] = pd.to_datetime(df_oa['Date']).dt.date
-                df_oa['VIX'] = pd.to_numeric(df_oa['ClosePrice'], errors='coerce')
-                df_oa = df_oa[['Date', 'VIX']].set_index('Date').sort_index(ascending=False)
-                return df_oa, "期交所 OpenAPI"
-    except:
-        pass # 失敗則轉向備援
-
-    # --- 來源 B: yfinance (備援) ---
-    try:
-        # 抓取最近 10 天，確保跨越連假
-        yf_data = yf.download("^VIXTWN", period="10d", interval="1d", progress=False)
-        if not yf_data.empty:
-            if isinstance(yf_data.columns, pd.MultiIndex):
-                yf_data.columns = yf_data.columns.get_level_values(0)
+        if not df.empty:
+            # 1. 處理 MultiIndex 欄位
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
             
-            df_yf = yf_data[['Close']].rename(columns={'Close': 'VIX'})
-            df_yf.index = pd.to_datetime(df_yf.index).date
-            return df_yf.sort_index(ascending=False), "yfinance (備援)"
-    except:
-        pass
-
-    return None, None
+            # 2. 移除可能存在的空值 (假日有時會產生只有日期但沒數值的列)
+            df = df.dropna(subset=['Close'])
+            
+            # 3. 整理格式
+            df = df[['Close']].rename(columns={'Close': 'VIX'})
+            df.index = pd.to_datetime(df.index).date
+            return df.sort_index(ascending=False) # 最新在前
+        return None
+    except Exception as e:
+        st.error(f"連線異常: {e}")
+        return None
 
 # --- UI 呈現 ---
-st.title("🛡️ 台指 VIX 數據監控中心")
-st.info(f"📅 今天是 2026-04-06 (補假)，台股休市。系統自動抓取最後交易日數據。")
+st.title("📊 台指 VIX 監控 (連假自動回溯)")
+st.caption(f"系統檢查時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-# 執行抓取
-with st.spinner('同步官方數據源中...'):
-    vix_df, source_name = get_vix_comprehensive()
+if st.button("🔄 刷新數據庫"):
+    st.cache_data.clear()
+    st.rerun()
+
+with st.spinner('正在搜尋最近交易日數據...'):
+    vix_df = get_vix_data_robust()
 
 if vix_df is not None and not vix_df.empty:
-    # 1. 取得最新一筆 (連假前收盤)
+    # 取得最新的一筆真實成交資料
     latest_val = float(vix_df['VIX'].iloc[0])
-    latest_date = vix_df.index[0]
+    latest_date = vix_df.index[0]  # 這邊會自動抓到 4/2
     
-    # 計算與前一交易日漲跌
+    # 取得前一交易日計算漲跌
     if len(vix_df) > 1:
         prev_val = float(vix_df['VIX'].iloc[1])
         delta = latest_val - prev_val
     else:
         delta = 0
 
-    # 2. 指標看板
+    # 1. 看板顯示
     col1, col2, col3 = st.columns(3)
+    
     with col1:
-        st.metric(f"最後結算價 ({latest_date})", f"{latest_val:.2f}", f"{delta:.2f}")
+        # 判斷是否為「今天」
+        is_today = latest_date == datetime.now().date()
+        status_label = "今日盤中" if is_today else "最後交易日"
+        st.metric(f"{status_label} ({latest_date})", f"{latest_val:.2f}", f"{delta:.2f}")
+    
     with col2:
-        # 市場情緒
-        if latest_val > 25:
-            st.error("🚨 市場避險情緒濃厚")
-        elif latest_val < 17:
-            st.success("😊 市場氣氛樂觀")
+        if latest_val >= 25:
+            st.error("🚨 市場狀態：避險情緒高漲")
+        elif latest_val <= 17:
+            st.success("😊 市場狀態：樂觀平穩")
         else:
-            st.info("🟡 波動率處於常態")
+            st.info("🟡 市場狀態：常態波動")
+            
     with col3:
-        st.write(f"**目前數據源：** `{source_name}`")
-        if st.button("🔄 立即重新整理"):
-            st.rerun()
+        st.write("**休市公告：**")
+        st.warning("目前處於清明連假補假，數據已自動回溯至 4/2 結算點位。")
 
     st.divider()
 
-    # 3. 數據明細
-    st.subheader("📋 歷史成交紀錄清單")
+    # 2. 數據表
+    st.subheader("📋 歷史交易紀錄 (自動過濾休假日)")
     st.dataframe(
         vix_df.style.format("{:.2f}")
-              .background_gradient(cmap="coolwarm", subset=['VIX']),
-        use_container_width=True,
-        height=500
+              .background_gradient(cmap="YlOrRd", subset=['VIX']),
+        use_container_width=True
     )
     
-    # 4. 監控小提醒
-    with st.expander("💡 投資觀察重點"):
-        st.write("""
-        - **基準日說明：** 由於今日 4/6 休市，最新數據為 4/3 之結算點位。
-        - **恐慌門檻：** 一般而言，VIX 指數超過 20 代表波動開始放大，超過 30 則代表市場進入極度恐慌。
-        - **數據更新：** 官方 OpenAPI 數據於每日收盤後由期交所發布。
-        """)
-
 else:
-    st.error("❌ 嚴重錯誤：無法從任何來源取得數據。")
-    st.info("建議檢查：1. 您的網路連線 2. 終端機執行 `pip install --upgrade yfinance requests`。")
+    st.error("❌ 無法取得數據。請確認 yfinance 是否正常運作。")
