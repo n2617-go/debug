@@ -1,144 +1,43 @@
-import streamlit as st
-from playwright.sync_api import sync_playwright
-import pytesseract
-from PIL import Image, ImageEnhance
-import io
-import os
-import re
-import time
-import pytz
-import json
-import requests
-import yfinance as yf
-import subprocess
-from datetime import datetime
-
-# --- 1. 環境強制初始化 ---
-def ensure_playwright():
-    """確保雲端環境有瀏覽器執行檔"""
-    try:
-        # 檢查路徑是否存在，若無則安裝
-        if not os.path.exists("/home/appuser/.cache/ms-playwright"):
-            subprocess.run(["playwright", "install", "chromium"], check=True)
-    except Exception as e:
-        st.error(f"環境初始化警告: {e}")
-
-ensure_playwright()
-
-PIZZA_FILE = "intelligence_data.json"
-MARKET_FILE = "market_data.json"
-tz_tw = pytz.timezone('Asia/Taipei')
-
-# --- 2. 持久化工具 ---
-def save_json(file, data):
-    with open(file, "w") as f:
-        json.dump(data, f)
-
-def load_json(file, default):
-    if os.path.exists(file):
-        with open(file, "r") as f:
-            try: return json.load(f)
-            except: return default
-    return default
-
-# --- 3. UI 設定 ---
-st.set_page_config(page_title="Global Intel Center", layout="centered")
-st.markdown("""
-    <style>
-    .dashboard-card { background-color: #000; border-radius: 12px; padding: 20px; border: 1px solid #333; margin-bottom: 10px; }
-    .db-value { font-family: 'Courier New', monospace; color: #FF4B4B; font-weight: bold; }
-    </style>
-""", unsafe_allow_html=True)
-
-# --- 4. 核心抓取邏輯 (含快照功能) ---
-
-def fetch_vixtwn_with_debug():
-    """物理重擊抓取 + 除錯快照"""
+def fetch_vixtwn_physical():
+    """台指 VIX 物理重擊：多點採樣強化版"""
     url = "https://mis.taifex.com.tw/futures/VolatilityQuotes/"
     vix_val = "N/A"
-    debug_shot = None
-    
     try:
         with sync_playwright() as p:
-            # 啟動時加入更多穩定性參數
-            browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'])
+            browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu'])
+            # 統一解析度，這對座標精準度至關重要
             context = browser.new_context(viewport={'width': 1280, 'height': 800})
             page = context.new_page()
-            
-            # 1. 進入頁面
             page.goto(url, wait_until="networkidle", timeout=60000)
-            time.sleep(4) # 等待彈窗完全浮現
+            time.sleep(5) # 稍微增加等待時間，確保按鈕已渲染
             
-            # 2. 物理重擊點擊 (針對 1280x800)
-            # 增加點擊次數與範圍，確保擊中橘色按鈕
-            page.mouse.click(640, 755)
-            time.sleep(1)
-            page.mouse.click(640, 760)
+            # --- 多點採樣點擊：十字型覆蓋橘色按鈕區域 ---
+            # 根據快照，橘色按鈕大約在 640, 755 附近
+            target_points = [
+                (640, 755), (640, 750), (640, 760), # 中心線
+                (600, 755), (680, 755)              # 左右延伸
+            ]
+            for x, y in target_points:
+                page.mouse.click(x, y)
+                time.sleep(0.2)
             
-            # 3. 等待數據渲染
-            time.sleep(8) 
+            # 補償方案：如果點擊沒效，嘗試用 JavaScript 觸發
+            page.evaluate("() => { const b = document.querySelector('.btn-orange'); if(b) b.click(); }")
             
-            # 4. 掃描數值
+            time.sleep(8) # 等待表格數據跑出來
+            
+            # 抓取表格內容
             cells = page.query_selector_all("td")
             for cell in cells:
                 text = cell.inner_text().strip()
+                # 辨識特徵：包含小數點、純數字、長度合理
                 if '.' in text and text.replace('.', '').isdigit() and len(text) < 7:
                     vix_val = text
                     break
             
-            # 無論成功與否，抓一張快照存下來除錯
-            debug_shot = page.screenshot()
+            # 更新快照供您檢查
+            st.session_state['last_shot'] = page.screenshot()
             browser.close()
+            return vix_val
     except Exception as e:
-        vix_val = f"Error: {str(e)}"
-    
-    return vix_val, debug_shot
-
-def fetch_market_data():
-    """整合三大指標"""
-    v_us, v_tw, v_crypto = "N/A", "N/A", "N/A"
-    shot = None
-    # 1. 美股
-    try:
-        hist = yf.Ticker("^VIX").history(period="1d")
-        if not hist.empty: v_us = round(hist['Close'].iloc[-1], 2)
-    except: pass
-    # 2. 台指 (帶快照)
-    v_tw, shot = fetch_vixtwn_with_debug()
-    # 3. 加密
-    try:
-        res = requests.get("https://api.alternative.me/fng/").json()
-        v_crypto = res['data'][0]['value']
-    except: pass
-    return v_us, v_tw, v_crypto, shot
-
-# --- 5. 頁面呈現 ---
-st.title("🛡️ Global Intel Center")
-
-# 市場數據
-saved_market = load_json(MARKET_FILE, {"v_us": "N/A", "v_tw": "N/A", "v_crypto": "N/A", "update_time": "尚未更新"})
-
-if st.button("📊 更新市場恐慌情報", use_container_width=True):
-    with st.spinner("正在執行物理突破與快照擷取..."):
-        v_us, v_tw, v_crypto, shot = fetch_market_data()
-        saved_market = {
-            "v_us": v_us, "v_tw": v_tw, "v_crypto": v_crypto,
-            "update_time": datetime.now(tz_tw).strftime("%H:%M:%S")
-        }
-        save_json(MARKET_FILE, saved_market)
-        
-        # 如果有快照，暫時存入 session 顯示
-        if shot: st.session_state['last_shot'] = shot
-        st.rerun()
-
-# 顯示數值卡片
-col1, col2, col3 = st.columns(3)
-with col1: st.markdown(f'<div class="dashboard-card"><p>美股 VIX</p><h2 class="db-value">{saved_market["v_us"]}</h2></div>', unsafe_allow_html=True)
-with col2: st.markdown(f'<div class="dashboard-card"><p>台指 VIX</p><h2 class="db-value">{saved_market["v_tw"]}</h2></div>', unsafe_allow_html=True)
-with col3: st.markdown(f'<div class="dashboard-card"><p>加密 F&G</p><h2 class="db-value">{saved_market["v_crypto"]}</h2></div>', unsafe_allow_html=True)
-
-# 📸 顯示除錯快照
-if 'last_shot' in st.session_state:
-    with st.expander("🔍 查看瀏覽器執行快照 (除錯用)", expanded=True):
-        st.image(st.session_state['last_shot'], caption="這是程式點擊後看到的畫面")
-        st.info("如果畫面仍停留在免責聲明，代表物理點擊位置需要微調。")
+        return f"重擊失敗: {e}"
