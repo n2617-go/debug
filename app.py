@@ -6,7 +6,8 @@ import io
 import os
 import re
 import time
-import yfinance as ticker # 用於抓取三大恐慌指標
+import yfinance as yf
+import requests
 
 # --- 環境初始化 ---
 def ensure_env():
@@ -15,11 +16,8 @@ def ensure_env():
 
 ensure_env()
 
-# --- 1. 定義：世界監測數據 (DEFCON & 披薩指數) ---
+# --- 核心：世界監測數據 (OCR 物理掃描) ---
 def get_world_monitor_data():
-    """
-    實施：精準區域手術辨識 (解決黑底白字與白框干擾)
-    """
     lvl, pct = 1, 0.0
     try:
         with sync_playwright() as p:
@@ -28,23 +26,21 @@ def get_world_monitor_data():
             page.goto("https://worldmonitor.app/", wait_until="domcontentloaded", timeout=60000)
             time.sleep(15) 
             
-            # 抓取數據主區域
+            # 抓取數據主區域 (維持 x:350 定位)
             screenshot_bytes = page.screenshot(clip={'x': 350, 'y': 15, 'width': 1100, 'height': 100})
             browser.close()
             
             img_full = Image.open(io.BytesIO(screenshot_bytes)).convert('L')
             
-            # DEFCON 局部裁切辨識
+            # 1. DEFCON 精準裁切 + 反轉 (解決黑底白字浮現)
             img_defcon_zone = img_full.crop((350, 10, 600, 90)) 
             img_defcon_boost = img_defcon_zone.resize((img_defcon_zone.width * 8, img_defcon_zone.height * 8), Image.Resampling.LANCZOS)
-            
-            # 反轉通道辨識 (針對黑底白字)
-            img_inv = ImageOps.invert(img_defcon_boost)
-            img_inv = img_inv.point(lambda x: 255 if x > 140 else 0, mode='1')
+            img_inv = ImageOps.invert(img_defcon_boost).point(lambda x: 255 if x > 145 else 0, mode='1')
             raw_inv = pytesseract.image_to_string(img_inv, config='--psm 6')
 
-            # 百分比辨識 (維持穩定 8x 通道)
+            # 2. 百分比 8 倍放大 (解決 51% 或 29% 誤判)
             img_pct_boost = img_full.resize((img_full.width * 8, img_full.height * 8), Image.Resampling.LANCZOS)
+            img_pct_boost = img_pct_boost.filter(ImageFilter.SHARPEN)
             raw_pct = pytesseract.image_to_string(img_pct_boost, config='--psm 6')
             
             combined_text = f"{raw_inv} {raw_pct}"
@@ -58,65 +54,64 @@ def get_world_monitor_data():
     except Exception as e:
         return None, None, str(e)
 
-# --- 2. 定義：三大恐慌指標 (市場端) ---
-def get_panic_indicators():
-    """
-    抓取市場三大恐慌指標
-    """
-    indicators = {}
+# --- 核心：三大恐慌指標 (VIX + VIXTWN + Crypto) ---
+def get_triple_fear_metrics():
+    data = {"VIX": "N/A", "VIXTWN": "N/A", "CRYPTO": "N/A", "CRYPTO_TEXT": "N/A"}
     try:
-        # 1. VIX 指數 (恐慌指數)
-        vix = ticker.Ticker("^VIX").history(period="1d")['Close'].iloc[-1]
-        indicators['VIX'] = round(vix, 2)
+        # 1. 美股 VIX (^VIX)
+        vix = yf.Ticker("^VIX").history(period="1d")['Close'].iloc[-1]
+        data["VIX"] = round(vix, 2)
         
-        # 2. Put/Call Ratio (模擬或從財經網抓取，此處以標普 500 波動率參考)
-        spy_vol = ticker.Ticker("SPY").history(period="1d")['Volume'].iloc[-1]
-        indicators['Market_Vol'] = f"{spy_vol/1000000:.1f}M"
+        # 2. 台股 VIXTWN (物理重擊核心)
+        # 如果 VIXTWN.TW 無法獲取，建議改用 00677U.TW 或手動輸入參考值
+        vixtwn = yf.Ticker("VIXTWN.TW").history(period="1d")['Close'].iloc[-1]
+        data["VIXTWN"] = round(vixtwn, 2)
         
-        # 3. 避險資產 - 黃金價格
-        gold = ticker.Ticker("GC=F").history(period="1d")['Close'].iloc[-1]
-        indicators['Gold'] = round(gold, 1)
-        
-        return indicators
+        # 3. Crypto Fear & Greed Index
+        crypto_res = requests.get("https://api.alternative.me/fng/").json()
+        data["CRYPTO"] = crypto_res['data'][0]['value']
+        data["CRYPTO_TEXT"] = crypto_res['data'][0]['value_classification']
     except:
-        return {"VIX": "N/A", "Market_Vol": "N/A", "Gold": "N/A"}
+        pass
+    return data
 
-# --- 3. UI 佈局 ---
-st.set_page_config(page_title="AI 股市監控中心", layout="wide")
-st.title("📊 台灣股市 AI 智慧監控數據中心")
+# --- UI 介面佈局 ---
+st.set_page_config(page_title="AI 物理重擊監控中心", layout="wide")
+st.title("📊 台灣股市 AI 智慧監控：終極整合系統")
 
 # 初始化 Session State
-if 'world_data' not in st.session_state: st.session_state['world_data'] = {"lvl": 3, "pct": 51, "raw": "尚未掃描"}
-if 'panic_data' not in st.session_state: st.session_state['panic_data'] = {"VIX": 0, "Market_Vol": "0", "Gold": 0}
+if 'world' not in st.session_state: st.session_state['world'] = {"lvl": 3, "pct": 51, "log": "尚未更新"}
+if 'fear' not in st.session_state: st.session_state['fear'] = {"VIX": 0, "VIXTWN": 0, "CRYPTO": 0, "CRYPTO_TEXT": "-"}
 
 col1, col2 = st.columns(2)
 
-# --- 左側：世界警戒數據 (與您今日成功的辨識邏輯一致) ---
+# --- 左側：世界警戒區 (OCR) ---
 with col1:
-    st.subheader("🛡️ 世界警戒狀態 (OCR 偵測)")
-    if st.button("🔄 更新 DEFCON & 披薩指數"):
-        with st.spinner("正在穿透白框辨識中..."):
-            lvl, pct, raw = get_world_monitor_data()
-            if lvl:
-                st.session_state['world_data'] = {"lvl": lvl, "pct": pct, "raw": raw}
+    st.subheader("🕵️ 世界實體偵察 (OCR 技術)")
+    if st.button("🔄 更新 DEFCON & 披薩指數", use_container_width=True):
+        with st.spinner("正在執行超解析度辨識..."):
+            l, p, g = get_world_monitor_data()
+            if l: st.session_state['world'] = {"lvl": l, "pct": p, "log": g}
     
-    wd = st.session_state['world_data']
-    st.metric("DEFCON 級別", f"LEVEL {wd['lvl']}")
-    st.metric("披薩指數 (PIZZA INDEX)", f"{int(wd['pct'])}%")
-    st.caption(f"原始偵察流：{wd['raw']}")
+    w = st.session_state['world']
+    st.metric("DEFCON 級別", f"LEVEL {w['lvl']}")
+    st.metric("披薩指數 (PIZZA INDEX)", f"{int(w['pct'])}%")
+    with st.expander("查看 OCR 日誌"):
+        st.code(w['log'])
 
-# --- 右側：三大恐慌指標 (原本成功的功能) ---
+# --- 右側：三大恐慌指標 (物理重擊) ---
 with col2:
-    st.subheader("📉 市場三大恐慌指標")
-    if st.button("🔄 更新財經恐慌指標"):
-        with st.spinner("正在同步全球市場數據..."):
-            indicators = get_panic_indicators()
-            st.session_state['panic_data'] = indicators
+    st.subheader("📉 三大恐慌指標 (跨市場監控)")
+    if st.button("🔄 更新 VIX & Crypto 指數", use_container_width=True):
+        with st.spinner("正在同步全球市場恐慌數據..."):
+            f_data = get_triple_fear_metrics()
+            st.session_state['fear'] = f_data
     
-    pd = st.session_state['panic_data']
-    st.metric("VIX 恐慌指數", pd['VIX'], delta_color="inverse")
-    st.metric("市場交易量 (SPY)", pd['Market_Vol'])
-    st.metric("黃金避險價格 (USD)", f"${pd['Gold']}")
+    f = st.session_state['fear']
+    st.metric("美股 VIX 指數", f"{f['VIX']}", delta_color="inverse")
+    st.metric("台股 VIXTWN (物理重擊)", f"{f['VIXTWN']}", delta="台股波動率")
+    st.metric("Crypto Fear & Greed", f"{f['CRYPTO']}", help=f"狀態: {f['CRYPTO_TEXT']}")
+    st.write(f"當前幣圈情緒：**{f['CRYPTO_TEXT']}**")
 
 st.divider()
-st.info("💡 系統提示：左側數據使用高密度 OCR 技術，自動克服網頁黑底白字干擾；右側數據則同步自全球即時財經 API。")
+st.success("✅ 物理重擊整合版已就緒。左側監控世界實體警戒，右側鎖定金融市場三方恐慌。")
