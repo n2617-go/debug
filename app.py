@@ -12,10 +12,8 @@ import requests
 import yfinance as yf
 from datetime import datetime, timedelta
 
-# --- 1. 環境與檔案路徑初始化 ---
-if not os.path.exists("/home/appuser/.cache/ms-playwright"):
-    os.system("playwright install chromium")
-
+# --- 1. 環境初始化 ---
+# 移除原本的 os.system("playwright install chromium")，改由系統自動處理
 PIZZA_FILE = "intelligence_data.json"
 MARKET_FILE = "market_data.json"
 tz_tw = pytz.timezone('Asia/Taipei')
@@ -63,7 +61,7 @@ def get_pizza_intel(progress_bar):
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu'])
             page = browser.new_page(viewport={'width': 1920, 'height': 1080})
-            page.goto("https://worldmonitor.app/", wait_until="commit", timeout=60000)
+            page.goto("https://worldmonitor.app/", wait_until="domcontentloaded", timeout=60000)
             for i in range(100):
                 time.sleep(0.02)
                 progress_bar.progress(i + 1)
@@ -77,106 +75,73 @@ def get_pizza_intel(progress_bar):
             pct = re.search(r'(\d+)\s*%', raw_text)
             return (int(lvl.group(1)) if lvl else 1), (float(pct.group(1)) if pct else 0.0)
     except Exception as e:
-        st.error(f"OCR 掃描失敗: {e}")
+        st.error(f"披薩 OCR 失敗: {e}")
         return None, None
 
 def fetch_vixtwn_physical():
-    """
-    台指 VIXTWN 物理座標突破版
-    採用 1280x800 固定解析度與物理點擊技術
-    """
+    """VIXTWN 物理座標突破版"""
     url = "https://mis.taifex.com.tw/futures/VolatilityQuotes/"
-    vix_val = None
-    
+    vix_val = "N/A"
     try:
         with sync_playwright() as p:
-            # 使用固定解析度確保座標準確
-            browser = p.chromium.launch(headless=True, args=['--no-sandbox'])
+            browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu'])
             context = browser.new_context(viewport={'width': 1280, 'height': 800})
             page = context.new_page()
-            
-            # 1. 進入頁面
             page.goto(url, wait_until="networkidle", timeout=60000)
-            time.sleep(3) # 等待彈窗完整浮現
-            
-            # 2. 物理座標點擊突破免責聲明 (對準截圖中的橘色按鈕區域)
-            # 在按鈕可能出現的中心區域進行地毯式點擊
-            click_points = [(640, 750), (640, 760), (600, 755), (680, 755)]
-            for x, y in click_points:
-                page.mouse.click(x, y)
-                time.sleep(0.3)
-            
-            # 3. 輔助：JS 嘗試點擊 (以防物理點擊未觸發)
-            page.evaluate("""() => {
-                const btn = document.querySelector('button.btn-orange') || document.querySelector('.btn-confirm');
-                if (btn) btn.click();
-            }""")
-            
-            # 4. 等待數據加載並掃描特徵
+            time.sleep(3)
+            # 物理點擊橘色按鈕區域
+            page.mouse.click(640, 755)
             time.sleep(7) 
             cells = page.query_selector_all("td")
             for cell in cells:
                 text = cell.inner_text().strip()
-                # 辨識特徵：數字、含點、長度小於 7 (例如 36.45)
                 if '.' in text and text.replace('.', '').isdigit() and len(text) < 7:
                     vix_val = text
                     break
             browser.close()
             return vix_val
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"VIX 抓取失敗: {e}"
 
 def fetch_market_data():
-    """三大市場數據抓取整合"""
+    """三大市場數據抓取"""
     v_us, v_tw, v_crypto = "N/A", "N/A", "N/A"
     errors = []
-
-    # 1. 美股 VIX (yfinance)
+    # 1. 美股 VIX
     try:
         hist_us = yf.Ticker("^VIX").history(period="5d")
-        if not hist_us.empty:
-            v_us = round(hist_us['Close'].iloc[-1], 2)
-        else: errors.append("美股 VIX：回傳空資料")
-    except Exception as e: errors.append(f"美股 VIX 失敗: {e}")
-
-    # 2. 台指 VIXTWN (物理座標突破法)
-    val = fetch_vixtwn_physical()
-    if val and "Error" not in str(val):
-        v_tw = val
-    else:
-        errors.append(f"台指 VIXTWN 失敗：{val}")
-
-    # 3. 加密 F&G Index
+        if not hist_us.empty: v_us = round(hist_us['Close'].iloc[-1], 2)
+    except Exception as e: errors.append(f"美股失敗: {e}")
+    # 2. 台指 VIX (物理重擊)
+    v_tw = fetch_vixtwn_physical()
+    # 3. 加密 F&G
     try:
         res = requests.get("https://api.alternative.me/fng/", timeout=15).json()
         v_crypto = res['data'][0]['value']
-    except Exception as e: errors.append(f"加密 F&G 失敗: {e}")
-
+    except Exception as e: errors.append(f"加密失敗: {e}")
     return v_us, v_tw, v_crypto, errors
 
-# --- 5. 頁面呈現邏輯 ---
-
+# --- 5. 頁面呈現 ---
 st.markdown("<h1>🛡️ Global Intel Center</h1>", unsafe_allow_html=True)
 
-# 雙時區顯示
-c_time1, c_time2 = st.columns(2)
-with c_time1:
-    st.markdown(f'<div class="time-container"><div style="text-align:center;"><div style="font-size:10px;color:#aaa;">🇹🇼 台北</div><b>{datetime.now(tz_tw).strftime("%H:%M:%S")}</b></div></div>', unsafe_allow_html=True)
-with c_time2:
-    st.markdown(f'<div class="time-container"><div style="text-align:center;"><div style="font-size:10px;color:#aaa;">🇺🇸 華盛頓</div><b>{datetime.now(tz_us).strftime("%H:%M:%S")}</b></div></div>', unsafe_allow_html=True)
+# 時間顯示
+now_tw = datetime.now(tz_tw)
+now_us = datetime.now(tz_us)
+st.markdown(f"""
+    <div class="time-container">
+        <div style="text-align:center;"><div style="font-size:10px;color:#aaa;">🇹🇼 台北</div><b>{now_tw.strftime("%H:%M:%S")}</b></div>
+        <div style="text-align:center;"><div style="font-size:10px;color:#aaa;">🇺🇸 華盛頓</div><b>{now_us.strftime("%H:%M:%S")}</b></div>
+    </div>
+    """, unsafe_allow_html=True)
 
-# --- 披薩區域 ---
+# 披薩區
 st.subheader("🍕 五角大廈披薩情報")
 saved_pizza = load_json(PIZZA_FILE, {"lvl": 1, "pct": 0.0, "update_time": "尚未更新"})
-
 if st.button("🛰️ 更新披薩指數", use_container_width=True):
     bar = st.progress(0)
     lvl, pct = get_pizza_intel(bar)
     if lvl is not None:
-        saved_pizza = {
-            "lvl": lvl, "pct": pct, 
-            "update_time": datetime.now(tz_tw).strftime("%Y-%m-%d %H:%M:%S")
-        }
+        saved_pizza = {"lvl": lvl, "pct": pct, "update_time": datetime.now(tz_tw).strftime("%Y-%m-%d %H:%M:%S")}
         save_json(PIZZA_FILE, saved_pizza)
         st.rerun()
     bar.empty()
@@ -190,35 +155,20 @@ st.markdown(f"""
         <p class="update-tag">最後更新：{saved_pizza['update_time']}</p>
     </div>""", unsafe_allow_html=True)
 
-# --- 市場區域 ---
+# 市場區
 st.divider()
 st.subheader("📉 全球市場恐慌監控")
-saved_market = load_json(MARKET_FILE, {
-    "v_us": "N/A", "v_tw": "N/A", "v_crypto": "N/A", "update_time": "尚未更新"
-})
-
+saved_market = load_json(MARKET_FILE, {"v_us": "N/A", "v_tw": "N/A", "v_crypto": "N/A", "update_time": "尚未更新"})
 if st.button("📊 更新市場恐慌情報", use_container_width=True):
-    with st.spinner("正在執行物理突破並掃描數據..."):
+    with st.spinner("物理突破期交所並擷取數據..."):
         v_us, v_tw, v_crypto, errors = fetch_market_data()
-        
-        # 只要有一個數據成功就存檔
-        if any(v != "N/A" for v in [v_us, v_tw, v_crypto]):
-            saved_market = {
-                "v_us": v_us, "v_tw": v_tw, "v_crypto": v_crypto,
-                "update_time": datetime.now(tz_tw).strftime("%H:%M:%S")
-            }
-            save_json(MARKET_FILE, saved_market)
-            for e in errors: st.warning(f"⚠️ {e}")
-            st.rerun()
-        else:
-            st.error("所有市場數據抓取失敗。")
+        saved_market = {"v_us": v_us, "v_tw": v_tw, "v_crypto": v_crypto, "update_time": datetime.now(tz_tw).strftime("%H:%M:%S")}
+        save_json(MARKET_FILE, saved_market)
+        for e in errors: st.warning(f"⚠️ {e}")
+        st.rerun()
 
 m_col1, m_col2, m_col3 = st.columns(3)
-with m_col1:
-    st.markdown(f'<div class="dashboard-card" style="text-align:center;"><p class="market-label">美股 VIX</p><p class="db-value" style="font-size:32px;">{saved_market["v_us"]}</p></div>', unsafe_allow_html=True)
-with m_col2:
-    st.markdown(f'<div class="dashboard-card" style="text-align:center;"><p class="market-label">台指 VIXTWN</p><p class="db-value" style="font-size:32px;">{saved_market["v_tw"]}</p></div>', unsafe_allow_html=True)
-with m_col3:
-    st.markdown(f'<div class="dashboard-card" style="text-align:center;"><p class="market-label">加密 F&G</p><p class="db-value" style="font-size:32px;">{saved_market["v_crypto"]}</p></div>', unsafe_allow_html=True)
-
+with m_col1: st.markdown(f'<div class="dashboard-card" style="text-align:center;"><p class="market-label">美股 VIX</p><p class="db-value" style="font-size:32px;">{saved_market["v_us"]}</p></div>', unsafe_allow_html=True)
+with m_col2: st.markdown(f'<div class="dashboard-card" style="text-align:center;"><p class="market-label">台指 VIXTWN</p><p class="db-value" style="font-size:32px;">{saved_market["v_tw"]}</p></div>', unsafe_allow_html=True)
+with m_col3: st.markdown(f'<div class="dashboard-card" style="text-align:center;"><p class="market-label">加密 F&G</p><p class="db-value" style="font-size:32px;">{saved_market["v_crypto"]}</p></div>', unsafe_allow_html=True)
 st.caption(f"數據最後更新：{saved_market['update_time']}")
