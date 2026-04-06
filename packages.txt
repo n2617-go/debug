@@ -1,10 +1,10 @@
 tesseract-ocr
 tesseract-ocr-eng
 libtesseract-dev
+fonts-noto-cjk
 libnss3
 libxss1
 libasound2
 libatk-bridge2.0-0
 libgtk-3-0
 libgbm1
-fonts-noto-cjk
