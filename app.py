@@ -4,9 +4,12 @@ import pytesseract
 from PIL import Image, ImageOps, ImageFilter
 io, os, re, time = __import__('io'), __import__('os'), __import__('re'), __import__('time')
 
-def physical_force_extreme_zoom():
+def physical_force_precision_bombing():
     """
-    策略：將視窗拉長至 1600px，對螢幕下方 1/4 區域進行地毯式重擊
+    針對 1000028204.jpg 優化：
+    1. 視窗拉長到 1800px 確保按鈕一定在畫面內
+    2. 針對左側橘色區塊進行地毯轟炸
+    3. 強制執行 JS 點擊橘色按鈕
     """
     url = "https://mis.taifex.com.tw/futures/disclaimer"
     res_val = "N/A"
@@ -14,44 +17,47 @@ def physical_force_extreme_zoom():
     
     try:
         with sync_playwright() as p:
-            # 1. 暴力放大視窗高度，讓按鈕完全展開
+            # 暴力拉長高度到 1800，確保長頁面的按鈕不會消失
             browser = p.chromium.launch(headless=True)
-            context = browser.new_context(viewport={'width': 1280, 'height': 1600})
+            context = browser.new_context(viewport={'width': 1280, 'height': 1800})
             page = context.new_page()
             
             page.goto(url, wait_until="networkidle")
-            time.sleep(4) # 給予更多載入時間
+            time.sleep(5) 
             
-            # 2. 強制滾動到底部並等待渲染
+            # 強制滾動到底部
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             time.sleep(1)
             
-            # 3. 區塊重擊 (Area Bombing)：針對截圖中橘色按鈕可能出現的矩形區域
-            # 根據 1000028201.jpg，按鈕在下方中央偏左
-            # 我們在 X: 400~600, Y: 900~1100 之間進行密集點擊
-            for x in range(400, 650, 40):
-                for y in range(900, 1150, 40):
+            # 【地毯式轟炸】針對左側橘色按鈕區域 (X: 400~520)
+            # 避開右邊 (X > 600) 的灰色按鈕區域
+            for x in range(420, 520, 20):
+                for y in range(950, 1150, 20):
                     page.mouse.click(x, y)
+                    time.sleep(0.05)
             
-            # 4. JS 補擊：不只找「接受」，連同 class 含有 orange 的都點
+            # 【精確 JS 鎖定】直接抓取具有橘色樣式的按鈕
             page.evaluate("""() => {
-                const elements = document.querySelectorAll('button, a, div[role="button"]');
-                elements.forEach(el => {
-                    const txt = el.innerText || "";
-                    if (txt.includes('接受') || el.classList.contains('orange') || el.id.includes('accept')) {
-                        el.click();
-                    }
-                });
+                const orangeBtn = Array.from(document.querySelectorAll('button')).find(b => 
+                    b.innerText.includes('接受') || 
+                    getComputedStyle(b).backgroundColor.includes('rgb(255, 128, 0)') ||
+                    b.className.includes('orange')
+                );
+                if (orangeBtn) {
+                    orangeBtn.scrollIntoView();
+                    orangeBtn.click();
+                }
             }""")
             
-            time.sleep(10) # 預留更長的跳轉時間給數據表
+            time.sleep(10) # 給予跳轉時間
             
-            # 5. 數據掃描：鎖定 25 以上的 VIX 數值
+            # 數據擷取與過濾
             cells = page.query_selector_all("td")
             for c in cells:
                 t = c.inner_text().strip()
                 if '.' in t and t.replace('.','').isdigit():
                     val = float(t)
+                    # 鎖定 VIX 數值區間，避開首頁的金融/電子期雜訊
                     if 25 < val < 55:
                         res_val = t
                         break
@@ -59,22 +65,18 @@ def physical_force_extreme_zoom():
             screenshot = page.screenshot()
             browser.close()
     except:
-        res_val = "重擊逾時"
+        res_val = "任務逾時"
     return res_val, screenshot
 
 # --- UI 介面 ---
-st.set_page_config(page_title="AI 鋼鐵重擊", layout="wide")
-st.title("🔥 暴力放大 X 區塊重擊任務")
+st.title("🛡️ 物理重擊：左側轟炸校準版")
 
-if st.button("🚀 執行【區塊轟炸】物理重擊", use_container_width=True):
-    with st.spinner("正在進行地毯式點擊..."):
-        val, shot = physical_force_extreme_zoom()
-        st.session_state['vix_twn'] = val
-        if shot: st.session_state['vix_shot'] = shot
+if st.button("🚀 執行精確物理重擊", use_container_width=True):
+    val, shot = physical_force_precision_bombing()
+    st.session_state['vix_twn'] = val
+    if shot: st.session_state['vix_shot'] = shot
 
 st.metric("台指期 VIXTWN (實時)", st.session_state.get('vix_twn', 'N/A'))
 
 if 'vix_shot' in st.session_state:
-    st.divider()
-    st.subheader("📸 重擊後現場檢查")
-    st.image(st.session_state['vix_shot'], caption="若看到表格則成功；若仍是首頁，我們需檢查是否有點到『不接受』")
+    st.image(st.session_state['vix_shot'], caption="檢查截圖：若是行情表則成功！若是首頁則代表仍未點中。")
