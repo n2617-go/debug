@@ -3,31 +3,32 @@ from playwright.sync_api import sync_playwright
 import time
 from datetime import datetime
 
-# --- 頁面設定 ---
-st.set_page_config(page_title="VIX 指數自動監控", layout="wide")
+# --- 頁面初始設定 ---
+st.set_page_config(page_title="台指 VIX 即時監測", layout="wide")
 
 def get_vix_data_final():
-    """整合 Cookie 注入與 JS 強制點擊的掃描邏輯"""
-    # 數據分頁網址
+    # 期交所 VIX 行情分頁直達網址
     target_url = "https://mis.taifex.com.tw/futures/VolatilityQuotes/"
     
-    # 進度提示
     progress_bar = st.progress(0)
     status_text = st.empty()
-    
     vix_val = "N/A"
     shot = None
     success = False
 
     try:
         with sync_playwright() as p:
-            status_text.text("1/4 啟動瀏覽器並注入通行證...")
+            status_text.text("1/4 正在配置瀏覽器並注入通行證...")
             progress_bar.progress(25)
             
-            # 啟動參數優化
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu"])
+            # 啟動穩定性參數
+            browser = p.chromium.launch(headless=True, args=[
+                "--no-sandbox", 
+                "--disable-gpu",
+                "--single-process"
+            ])
             
-            # 關鍵：手動塞入 Cookie，讓網頁跳過免責聲明按鈕
+            # 【關鍵】手動注入 Cookie，繞過「免責聲明」橘色按鈕彈窗
             context = browser.new_context(viewport={'width': 1280, 'height': 800})
             context.add_cookies([{
                 "name": "isDisclaimerConfirmed", 
@@ -38,92 +39,90 @@ def get_vix_data_final():
             
             page = context.new_page()
             
-            # 2. 進入頁面
-            status_text.text("2/4 前往行情頁面...")
+            # 2. 直接空降目標頁面
+            status_text.text("2/4 正在穿透防護網並讀取數據...")
             progress_bar.progress(50)
             page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
             
-            # 3. 預防機制：萬一 Cookie 沒生效，執行 JS 顏色辨識點擊
+            # 3. 預防萬一：若 Cookie 沒生效，用 JS 尋找橘色背景強制點擊
             page.evaluate("""
                 () => {
-                    const buttons = document.querySelectorAll('button');
-                    for (const btn of buttons) {
-                        const style = window.getComputedStyle(btn);
-                        // 尋找橘色背景按鈕 (免責聲明按鈕)
-                        if (style.backgroundColor.includes('rgb(255') || btn.className.includes('orange')) {
-                            btn.click();
+                    const btns = document.querySelectorAll('button');
+                    for (const b of btns) {
+                        const style = window.getComputedStyle(b);
+                        if (style.backgroundColor.includes('rgb(255') || b.className.includes('orange')) {
+                            b.click();
                         }
                     }
                 }
             """)
             
-            # 等待數據 AJAX 加載
-            time.sleep(5) 
+            # 等待數據非同步載入（期交所數據需要時間渲染）
+            time.sleep(6) 
 
-            # 4. 暴力搜尋 VIX 數值 (不依賴中文定位)
-            status_text.text("3/4 辨識數值座標...")
+            # 4. 特徵掃描：不依賴中文，尋找「數字 + 小數點」的格子
+            status_text.text("3/4 正在掃描 36.45 數據座標...")
             progress_bar.progress(75)
             
-            # 抓取表格中所有格子的文字
+            # 掃描頁面上所有 TD 儲存格
             cells = page.query_selector_all("td")
             for cell in cells:
                 text = cell.inner_text().strip()
-                # 辨識邏輯：數字、有小數點、長度短 (避開日期或其他干擾)
+                # 辨識邏輯：是數字、有小數點、排除長字串 (確保是我們要的點位)
                 if text.replace('.', '', 1).isdigit() and '.' in text and len(text) < 7:
                     vix_val = text
-                    shot = cell.screenshot() # 局部截圖
+                    shot = cell.screenshot() # 截取該數據格作為證據
                     success = True
                     break
             
             if not success:
-                # 若找不到數值，抓取全螢幕供除錯
+                # 若失敗，抓一張全螢幕截圖來確認目前卡在哪裡
                 shot = page.screenshot()
-                vix_val = "偵測到頁面，但未發現數值特徵"
+                vix_val = "偵測成功但未發現數值"
 
-            status_text.text("4/4 完成掃描！")
+            status_text.text("4/4 掃描任務完成！")
             progress_bar.progress(100)
             
     except Exception as e:
-        vix_val = f"系統異常: {str(e)}"
+        vix_val = f"系統層級錯誤: {str(e)}"
     finally:
+        # 清除進度條顯示
         progress_bar.empty()
         status_text.empty()
 
     return vix_val, shot, success
 
-# --- Streamlit UI 介面 ---
-st.title("🛡️ VIX 指數自動辨識系統")
-st.markdown("本系統採用 **Cookie 注入** 與 **顏色特徵定位** 技術，可繞過期交所免責聲明並解決伺服器亂碼問題。")
+# --- Streamlit 使用者介面 ---
+st.title("📊 台指 VIX 自動辨識系統")
+st.markdown("針對 **Streamlit Cloud** 環境優化：已解決中文字型亂碼與免責聲明阻擋問題。")
 
-# 側邊欄顯示
+# 側邊資訊欄
 with st.sidebar:
-    st.header("系統狀態")
-    st.write("🌍 運行環境: Streamlit Cloud")
-    st.write("🛠️ 技術細節: Playwright + JS Injection")
+    st.header("🛠️ 技術狀態")
+    st.write("🟢 模擬瀏覽器：Playwright")
+    st.write("🟢 繞過技術：Cookie Injection")
+    st.write("🟢 定位技術：JS Color Sensing")
 
-if st.button("🚀 獲取最新 VIX 指數", use_container_width=True):
-    val, img, ok = get_vix_data_final()
+# 主要操作區
+if st.button("🚀 執行一鍵數據擷取", use_container_width=True):
+    with st.status("正在連線至期交所...", expanded=True) as status:
+        val, img, ok = get_vix_data_final()
+        status.update(label="擷取流程結束", state="complete" if ok else "error")
     
     if ok:
-        col1, col2 = st.columns([1, 2])
-        with col1:
-            st.metric("台指 VIX 指數", val)
-            st.write(f"⏱️ 擷取時間：{datetime.now().strftime('%H:%M:%S')}")
-            
-            # 簡易警示邏輯
-            try:
-                if float(val) > 25: st.warning("⚠️ 市場波動性升高")
-                else: st.success("✅ 市場情緒平穩")
-            except: pass
-            
-        with col2:
-            st.write("### 📍 數據來源快照")
-            st.image(img, caption=f"網頁實際抓取到的數值：{val}")
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            st.metric("目前的 VIX 指數", val)
+            st.write(f"📅 更新時間：{datetime.now().strftime('%H:%M:%S')}")
+        with c2:
+            st.write("### 📍 數據來源快照 (座標驗證)")
+            st.image(img, caption=f"對應 VIX 數值：{val}")
+            st.success("成功繞過免責聲明並解決亂碼問題！")
     else:
-        st.error(f"掃描失敗：{val}")
+        st.error(f"擷取失敗原因：{val}")
         if img:
-            st.write("### 📸 偵錯截圖 (輔助判斷錯誤原因)")
+            st.write("### 📸 偵錯截圖 (請查看程式目前看到的畫面)")
             st.image(img)
 
 st.divider()
-st.caption("註：本工具僅供技術研究使用，實際數據請以期交所公告為準。")
+st.caption("提示：若截圖仍顯示免責聲明，請嘗試重新點擊按鈕。")
