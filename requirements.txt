@@ -1,5 +1,4 @@
 beautifulsoup4 
 requests 
 yfinance
-python 
-debug_vixtwn.py
+python
