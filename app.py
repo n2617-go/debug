@@ -1,10 +1,11 @@
 import streamlit as st
 from playwright.sync_api import sync_playwright
 import time
-import random
 
-def run_vix_stealth_scan():
-    url = "https://www.wantgoo.com/index/vixtwn/shareholding-distribution"
+def run_vix_flash_scan():
+    # 改用更輕量的主頁面，減少被攔截機率
+    url = "https://www.wantgoo.com/index/vixtwn"
+    
     progress_bar = st.progress(0)
     status_text = st.empty()
     
@@ -14,79 +15,83 @@ def run_vix_stealth_scan():
 
     try:
         with sync_playwright() as p:
-            status_text.text("⚙️ 正在啟動隱身瀏覽器...")
+            status_text.text("🚀 啟動閃擊引擎...")
             progress_bar.progress(20)
             
-            # 關鍵：加入更多 args 避開偵測
             browser = p.chromium.launch(headless=True, args=[
                 "--no-sandbox",
-                "--disable-blink-features=AutomationControlled", # 隱藏自動化標記
-                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                "--disable-setuid-sandbox",
+                "--disable-blink-features=AutomationControlled"
             ])
             
-            # 建立 context 並注入模擬腳本
-            context = browser.new_context(viewport={'width': 1920, 'height': 1080})
-            
-            # 偽裝 WebDriver 屬性，讓網站以為是真人在用 Chrome
+            # 關鍵：加入更真實的標頭
+            context = browser.new_context(
+                viewport={'width': 1280, 'height': 800},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+                locale="zh-TW",
+                timezone_id="Asia/Taipei"
+            )
             page = context.new_page()
-            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
-            # 進入網頁
-            status_text.text("🌐 正在連線並模擬真人瀏覽...")
+            # 關鍵修正：改用 'commit' 模式，只要伺服器一吐資料就開始工作
+            status_text.text("📡 嘗試突破連線限制...")
             progress_bar.progress(50)
-            page.goto(url, wait_until="networkidle", timeout=60000)
-            
-            # 模擬真人行為：隨機捲動一下
-            page.mouse.wheel(0, random.randint(300, 600))
-            time.sleep(random.uniform(2, 4)) # 模擬人類看網頁的停頓
-
-            # 定位數據 (改用更穩定的 CSS 路徑)
-            status_text.text("🔍 正在辨識 36.45 指數座標...")
-            progress_bar.progress(80)
-            
-            # 玩股網的結構：我們找包含價格的關鍵區塊
-            selector = "span.last"
             
             try:
-                # 再次確認元素是否真的載入
-                page.wait_for_selector(selector, state="visible", timeout=15000)
-                
-                # 擷取數據
-                vix_val = page.inner_text(selector).strip()
-                # 座標快照
-                element = page.query_selector(selector)
-                shot = element.screenshot()
-                success = True
-            except:
-                # 如果還是抓不到，抓全螢幕看看是不是跳出了廣告
-                shot = page.screenshot()
-                vix_val = "定位超時，請檢查截圖是否被廣告遮擋"
+                # 不等網路閒置，只要 DOM 出現就開始
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            except Exception as e:
+                status_text.text("⚠️ 連線較慢，嘗試強制掃描中...")
 
-            status_text.text("✅ 掃描完成！")
+            # 快速尋找數值座標
+            status_text.text("🔍 正在捕捉 36.45 座標點位...")
+            progress_bar.progress(80)
+            
+            # 嘗試多重定位
+            selectors = ["span.last", ".price-box .last", "b.price"]
+            
+            for selector in selectors:
+                try:
+                    # 只等 5 秒，有就有，沒有就換下一個
+                    el = page.wait_for_selector(selector, timeout=5000)
+                    if el:
+                        vix_val = el.inner_text().strip()
+                        shot = el.screenshot()
+                        success = True
+                        break
+                except:
+                    continue
+
+            if not success:
+                # 失敗時抓一張「現場證據」，看是不是被擋在外面
+                shot = page.screenshot()
+                vix_val = "連線成功但找不到數值，可能是版面跳轉"
+
             progress_bar.progress(100)
             time.sleep(1)
 
     except Exception as e:
-        vix_val = f"系統錯誤: {str(e)}"
+        vix_val = f"連線逾時或錯誤: {str(e)}"
     finally:
         progress_bar.empty()
         status_text.empty()
 
     return vix_val, shot, success
 
-st.title("🕶️ VIX 高階隱身掃描系統")
-st.markdown("使用 **Stealth 隱身技術** 繞過檢測，模擬真人行為擷取座標數據。")
+st.title("⚡ VIX 座標閃擊系統")
+st.info("此版本針對 Cloud 環境逾時問題優化，縮短等待時間並強化偽裝。")
 
-if st.button("🚀 執行深度掃描"):
-    val, img, ok = run_vix_stealth_scan()
+if st.button("🚀 執行閃擊掃描"):
+    val, img, ok = run_vix_flash_scan()
     
     if ok:
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            st.metric("辨識結果", val)
-        with c2:
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.metric("掃描結果", val)
+        with col2:
             st.image(img, caption="座標局部快照")
     else:
         st.error(val)
         if img:
-            st.image(img, caption="目前的網頁畫面 (除錯用)")
+            st.write("### 📸 偵錯快照 (程式目前看到的畫面)")
+            st.image(img)
