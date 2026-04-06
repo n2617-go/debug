@@ -3,126 +3,92 @@ from playwright.sync_api import sync_playwright
 import time
 from datetime import datetime
 
-# --- 頁面初始設定 ---
-st.set_page_config(page_title="台指 VIX 即時監測", layout="wide")
+st.set_page_config(page_title="VIX 終極突破系統", layout="wide")
 
-def get_vix_data_final():
-    # 期交所 VIX 行情分頁直達網址
-    target_url = "https://mis.taifex.com.tw/futures/VolatilityQuotes/"
+def super_bypass_vix():
+    # 使用行情分頁
+    url = "https://mis.taifex.com.tw/futures/VolatilityQuotes/"
     
-    progress_bar = st.progress(0)
-    status_text = st.empty()
     vix_val = "N/A"
     shot = None
     success = False
 
     try:
         with sync_playwright() as p:
-            status_text.text("1/4 正在配置瀏覽器並注入通行證...")
-            progress_bar.progress(25)
+            # 1. 偽裝成一般的 Windows Chrome 瀏覽器
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu"])
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                viewport={'width': 1280, 'height': 800}
+            )
             
-            # 啟動穩定性參數
-            browser = p.chromium.launch(headless=True, args=[
-                "--no-sandbox", 
-                "--disable-gpu",
-                "--single-process"
-            ])
-            
-            # 【關鍵】手動注入 Cookie，繞過「免責聲明」橘色按鈕彈窗
-            context = browser.new_context(viewport={'width': 1280, 'height': 800})
+            # 注入通行證
             context.add_cookies([{
-                "name": "isDisclaimerConfirmed", 
-                "value": "true", 
-                "domain": "mis.taifex.com.tw", 
-                "path": "/"
+                "name": "isDisclaimerConfirmed", "value": "true", 
+                "domain": "mis.taifex.com.tw", "path": "/"
             }])
             
             page = context.new_page()
             
-            # 2. 直接空降目標頁面
-            status_text.text("2/4 正在穿透防護網並讀取數據...")
-            progress_bar.progress(50)
-            page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+            # 2. 進入頁面
+            page.goto(url, wait_until="networkidle", timeout=60000)
             
-            # 3. 預防萬一：若 Cookie 沒生效，用 JS 尋找橘色背景強制點擊
+            # 3. 【暴力破門】不管按鈕有沒有出來，用 JS 直接對所有可能的橘色物體發動點擊
             page.evaluate("""
                 () => {
-                    const btns = document.querySelectorAll('button');
-                    for (const b of btns) {
-                        const style = window.getComputedStyle(b);
-                        if (style.backgroundColor.includes('rgb(255') || b.className.includes('orange')) {
-                            b.click();
+                    // 尋找所有按鈕
+                    const elements = document.querySelectorAll('button, div, span');
+                    for (const el of elements) {
+                        const style = window.getComputedStyle(el);
+                        const isOrange = style.backgroundColor.includes('rgb(255, 122, 66)') || 
+                                         style.backgroundColor.includes('rgb(255, 121, 65)');
+                        // 如果顏色對了，或者是確認類的按鈕，就點下去
+                        if (isOrange || el.innerText.includes('確認') || el.className.includes('btn-orange')) {
+                            el.click();
                         }
                     }
                 }
             """)
             
-            # 等待數據非同步載入（期交所數據需要時間渲染）
-            time.sleep(6) 
+            # 模擬真人捲動一下頁面 (觸發數據載入)
+            page.mouse.wheel(0, 500)
+            time.sleep(7) # 給予充足的數據載入時間
 
-            # 4. 特徵掃描：不依賴中文，尋找「數字 + 小數點」的格子
-            status_text.text("3/4 正在掃描 36.45 數據座標...")
-            progress_bar.progress(75)
-            
-            # 掃描頁面上所有 TD 儲存格
-            cells = page.query_selector_all("td")
-            for cell in cells:
-                text = cell.inner_text().strip()
-                # 辨識邏輯：是數字、有小數點、排除長字串 (確保是我們要的點位)
-                if text.replace('.', '', 1).isdigit() and '.' in text and len(text) < 7:
-                    vix_val = text
-                    shot = cell.screenshot() # 截取該數據格作為證據
+            # 4. 精準掃描表格數據
+            # 我們直接找包含小數點的 td，並排除掉長度太長的 (如日期)
+            found_cells = page.query_selector_all("td")
+            for cell in found_cells:
+                txt = cell.inner_text().strip()
+                # VIX 特徵：36.45 這種格式
+                if '.' in txt and txt.replace('.', '').isdigit() and len(txt) <= 6:
+                    vix_val = txt
+                    shot = cell.screenshot()
                     success = True
                     break
             
             if not success:
-                # 若失敗，抓一張全螢幕截圖來確認目前卡在哪裡
-                shot = page.screenshot()
-                vix_val = "偵測成功但未發現數值"
-
-            status_text.text("4/4 掃描任務完成！")
-            progress_bar.progress(100)
-            
+                shot = page.screenshot() # 沒抓到就拍全螢幕讓我們檢討
+                
     except Exception as e:
-        vix_val = f"系統層級錯誤: {str(e)}"
-    finally:
-        # 清除進度條顯示
-        progress_bar.empty()
-        status_text.empty()
-
+        vix_val = f"意外中斷: {str(e)}"
+    
     return vix_val, shot, success
 
-# --- Streamlit 使用者介面 ---
-st.title("📊 台指 VIX 自動辨識系統")
-st.markdown("針對 **Streamlit Cloud** 環境優化：已解決中文字型亂碼與免責聲明阻擋問題。")
+# --- UI ---
+st.title("🔥 VIX 數據破門系統")
+st.info("此版本模擬真人行為（捲動、偽裝標頭），專門對付『看得到點不到』的按鈕。")
 
-# 側邊資訊欄
-with st.sidebar:
-    st.header("🛠️ 技術狀態")
-    st.write("🟢 模擬瀏覽器：Playwright")
-    st.write("🟢 繞過技術：Cookie Injection")
-    st.write("🟢 定位技術：JS Color Sensing")
-
-# 主要操作區
-if st.button("🚀 執行一鍵數據擷取", use_container_width=True):
-    with st.status("正在連線至期交所...", expanded=True) as status:
-        val, img, ok = get_vix_data_final()
-        status.update(label="擷取流程結束", state="complete" if ok else "error")
-    
-    if ok:
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            st.metric("目前的 VIX 指數", val)
-            st.write(f"📅 更新時間：{datetime.now().strftime('%H:%M:%S')}")
-        with c2:
-            st.write("### 📍 數據來源快照 (座標驗證)")
-            st.image(img, caption=f"對應 VIX 數值：{val}")
-            st.success("成功繞過免責聲明並解決亂碼問題！")
-    else:
-        st.error(f"擷取失敗原因：{val}")
-        if img:
-            st.write("### 📸 偵錯截圖 (請查看程式目前看到的畫面)")
-            st.image(img)
-
-st.divider()
-st.caption("提示：若截圖仍顯示免責聲明，請嘗試重新點擊按鈕。")
+if st.button("🚀 啟動強效擷取"):
+    with st.spinner("正在突破防線..."):
+        val, img, ok = super_bypass_vix()
+        
+        if ok:
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                st.metric("台指 VIX 指數", val)
+                st.write(f"取得時間: {datetime.now().strftime('%H:%M:%S')}")
+            with c2:
+                st.image(img, caption="數據快照")
+        else:
+            st.error(f"目前狀態: {val}")
+            st.image(img, caption="目前瀏覽器看到的畫面")
