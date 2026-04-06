@@ -3,9 +3,10 @@ from playwright.sync_api import sync_playwright
 import time
 from datetime import datetime
 
-st.set_page_config(page_title="VIX 穩定掃描版", layout="wide")
+st.set_page_config(page_title="VIX 指數精準辨識", layout="wide")
 
-def run_vix_automated_with_click():
+def run_vix_precise_scan():
+    # 使用包含免責聲明的初始網址
     url = "https://mis.taifex.com.tw/futures/disclaimer/"
     
     progress_bar = st.progress(0)
@@ -15,60 +16,67 @@ def run_vix_automated_with_click():
     shot = None
     success = False
 
-    # 核心修正：將所有邏輯（含截圖）完整封裝在 with 內部
     try:
         with sync_playwright() as p:
-            status_text.text("1/4 啟動瀏覽器...")
+            status_text.text("1/4 啟動瀏覽器中...")
             progress_bar.progress(25)
             
-            # 加入 --single-process 減少記憶體衝突
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--single-process"])
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu"])
             context = browser.new_context(viewport={'width': 1280, 'height': 800})
             page = context.new_page()
 
-            # 2. 進入頁面並點擊橘色按鈕
-            status_text.text("2/4 處理免責聲明...")
+            # 2. 進入頁面
+            status_text.text("2/4 正在處理免責聲明按鈕...")
             progress_bar.progress(50)
             page.goto(url, wait_until="networkidle", timeout=60000)
             
-            confirm_selector = "button:has-text('我已閱讀並了解')"
+            # --- 重點：不靠文字，靠 CSS 結構點擊橘色按鈕 ---
+            # 根據截圖，橘色按鈕通常是頁面上唯一的特定顏色按鈕
             try:
-                page.wait_for_selector(confirm_selector, timeout=10000)
-                page.click(confirm_selector)
-                time.sleep(5) # 點擊後多等 5 秒讓表格載入
+                # 嘗試點擊包含特定樣式的按鈕 (通常是第一個 btn-primary 或 btn-orange)
+                # 我們直接定位到按鈕容器下的第一個按鈕
+                confirm_btn = page.wait_for_selector(".btn-confirm, .btn-primary, button:nth-child(1)", timeout=10000)
+                confirm_btn.click()
+                time.sleep(5) # 點擊後務必多等幾秒讓行情頁跑出來
             except:
                 pass
 
-            # 3. 掃描數值
-            status_text.text("3/4 辨識數值座標...")
+            # 3. 掃描數值 (不靠文字，靠表格結構)
+            status_text.text("3/4 掃描行情座標...")
             progress_bar.progress(75)
             
-            row_selector = "tr:has-text('臺指選擇權波動率指數')"
+            # 即使文字是亂碼，HTML 標籤 <tr> 和 <td> 還是存在的
+            # 跳轉後的行情頁通常會有一個主要表格，我們鎖定第一行數據
             try:
-                page.wait_for_selector(row_selector, timeout=15000)
-                cells = page.query_selector_all(f"{row_selector} td")
+                # 直接前往 VIX 專區網址以確保在正確頁面
+                page.goto("https://mis.taifex.com.tw/futures/VolatilityQuotes/", wait_until="networkidle")
                 
-                # 確保有抓到數值格 (通常是第 3 格)
-                if len(cells) >= 3:
-                    vix_val = cells[2].inner_text().strip()
-                    # *** 重要：在 browser 關閉前完成截圖 ***
-                    shot = cells[2].screenshot()
-                    success = True
-                else:
-                    vix_val = "找到列但格數不足"
-                    shot = page.screenshot() # 抓全螢幕除錯
+                # 等待表格出現
+                page.wait_for_selector("table", timeout=15000)
+                
+                # 針對你提供的圖一綠色框位：
+                # 通常是表格中包含指數的那一行 (第一行有效數據)
+                # 我們抓取表格中所有 td，並找出第一個符合數字格式的內容
+                all_cells = page.query_selector_all("td")
+                
+                for cell in all_cells:
+                    txt = cell.inner_text().strip()
+                    # 判斷是否為數字（例如 36.45）
+                    if txt.replace('.', '', 1).isdigit() and '.' in txt:
+                        vix_val = txt
+                        shot = cell.screenshot() # 局部截圖
+                        success = True
+                        break
             except Exception as e:
-                vix_val = f"定位失敗: {str(e)}"
-                shot = page.screenshot() # *** 重要：在這裡截圖，不要在 except 外面截 ***
+                vix_val = f"掃描異常: {str(e)}"
+                shot = page.screenshot() # 失敗就抓全螢幕
 
-            status_text.text("4/4 掃描完成！")
+            status_text.text("4/4 完成！")
             progress_bar.progress(100)
-            
-            # 當離開這個 with 區塊，browser 會自動關閉，這很安全
-            
+            time.sleep(1)
+
     except Exception as e:
-        # 這裡是處理 Playwright 啟動失敗或其他重大崩潰
-        vix_val = f"系統層級錯誤: {str(e)}"
+        vix_val = f"系統錯誤: {str(e)}"
         success = False
     finally:
         progress_bar.empty()
@@ -77,19 +85,22 @@ def run_vix_automated_with_click():
     return vix_val, shot, success
 
 # --- UI ---
-st.title("🛡️ 期交所 VIX 座標掃描系統 (修正 Event Loop 版)")
+st.title("📊 VIX 指數座標自動辨識系統")
+st.info("已優化按鈕點擊邏輯，避開伺服器中文字型缺失導致的定位失敗。")
 
-if st.button("🚀 開始自動化任務"):
-    val, img, ok = run_vix_automated_with_click()
+if st.button("🚀 執行自動辨識任務"):
+    val, img, ok = run_vix_precise_scan()
     
     if ok:
         c1, c2 = st.columns([1, 2])
         with c1:
-            st.metric("掃描到的數值", val)
+            st.metric("辨識到的數值", val)
+            st.write(f"取得時間：{datetime.now().strftime('%H:%M:%S')}")
         with c2:
-            st.image(img, caption=f"成功抓取的局部座標：{val}")
+            st.write("### 📍 座標掃描區快照")
+            st.image(img, caption=f"對應圖一位置：{val}")
     else:
-        st.error(f"掃描失敗：{val}")
+        st.error(val)
         if img:
-            st.write("### 📸 失敗時的畫面")
+            st.write("### 📸 失敗時的畫面 (協助排障)")
             st.image(img)
