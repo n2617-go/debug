@@ -1,64 +1,67 @@
-
 import streamlit as st
-from playwright.sync_api import sync_playwright
-import time
+import requests
+import pandas as pd
+from datetime import datetime
 
-def get_vix_data():
-    with sync_playwright() as p:
-        # 1. 啟動瀏覽器
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-        context = browser.new_context(viewport={'width': 1280, 'height': 800})
-        page = context.new_page()
-        
-        # 2. 進入免責聲明頁
-        page.goto("https://mis.taifex.com.tw/futures/disclaimer/", wait_until="domcontentloaded")
-        
-        # 3. 執行顏色辨識強制點擊 (JavaScript)
-        page.evaluate("""
-            () => {
-                const buttons = document.querySelectorAll('button');
-                for (const btn of buttons) {
-                    const style = window.getComputedStyle(btn);
-                    // 尋找橘色按鈕
-                    if (style.backgroundColor.includes('rgb(255') || btn.className.includes('orange')) {
-                        btn.click();
-                        return;
-                    }
-                }
-            }
-        """)
-        
-        # 4. 【關鍵修正】強制跳轉到數據頁面，確保避開免責聲明
-        time.sleep(3) # 給予一點點點擊反應時間
-        page.goto("https://mis.taifex.com.tw/futures/VolatilityQuotes/", wait_until="networkidle")
-        
-        # 5. 【暴力掃描】尋找 VIX 數值
-        # 我們不再只找 td:has-text('.')，而是掃描整個表格尋找符合 VIX 特徵的數字
-        vix_val = "未偵測到數值"
-        try:
-            # 等待表格載入
-            page.wait_for_selector("table", timeout=10000)
-            
-            # 取得所有儲存格
-            cells = page.query_selector_all("td")
-            for cell in cells:
-                text = cell.inner_text().strip()
-                # 辨識邏輯：如果是數字、有小數點、且長度在 4~6 之間 (例如 36.45)
-                if text.replace('.', '', 1).isdigit() and '.' in text and len(text) < 7:
-                    vix_val = text
-                    break 
-        except Exception as e:
-            vix_val = f"數據辨識超時: {str(e)}"
-            
-        return vix_val
+st.set_page_config(page_title="VIX 數據直連系統", layout="wide")
 
-# Streamlit UI
-st.title("📊 VIX 自動辨識系統 (穩定版)")
+def get_vix_via_api():
+    """繞過網頁介面，直接請求期交所後台 JSON 數據"""
+    # 這是期交所後台真正的數據接口 (API)
+    api_url = "https://mis.taifex.com.tw/futures/api/getQuotesList"
+    
+    # 模擬瀏覽器標頭，避免被當成爬蟲
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "Content-Type": "application/json",
+        "Referer": "https://mis.taifex.com.tw/futures/VolatilityQuotes/"
+    }
+    
+    # 請求參數：指定要抓取 VIX (台指選擇權波動率指數)
+    payload = {
+        "MarketType": "4",
+        "SymbolType": "F",
+        "Kind": "I",
+        "SymbolID": "VIXTWN"
+    }
 
-if st.button("🚀 執行一鍵掃描"):
-    with st.spinner("正在突破免責聲明並擷取數據..."):
-        result = get_vix_data()
-        if "." in result:
-            st.metric("目前的 VIX 指數", result)
+    try:
+        # 發送 POST 請求
+        response = requests.post(api_url, json=payload, headers=headers, timeout=15)
+        data = response.json()
+        
+        # 解析 JSON 結構
+        # 數據通常在 data['RtData']['QuoteList'] 裡面
+        if data.get('RtList'):
+            vix_item = data['RtList'][0]
+            vix_val = vix_item.get('DispPrice', 'N/A') # 這就是我們要的 36.45
+            update_time = vix_item.get('DispTime', '')
+            return vix_val, update_time, True
         else:
-            st.error(result)
+            return "數據格式變更", "", False
+            
+    except Exception as e:
+        return f"連線失敗: {str(e)}", "", False
+
+# --- Streamlit UI ---
+st.title("🚀 VIX 數據直連系統 (API 突破版)")
+st.markdown("此版本**捨棄瀏覽器模擬**，直接從期交所數據接口獲取數值，完全避開按鈕點擊與亂碼問題。")
+
+if st.button("⚡ 獲取最新 VIX 指數"):
+    with st.spinner("正在直連數據源..."):
+        val, update_t, ok = get_vix_via_api()
+        
+        if ok:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("台指 VIX 指數", val)
+            with col2:
+                st.info(f"📅 數據時間：{update_t}")
+            
+            st.success("✅ 成功繞過免責聲明與 Cloudflare 檢測！")
+        else:
+            st.error(f"❌ 擷取失敗：{val}")
+            st.warning("如果直連失敗，代表 API 接口可能暫時變更，請回報檢查。")
+
+st.divider()
+st.caption("技術原理：不掃描網頁座標，直接攔截網頁背後的 JSON 數據流。")
