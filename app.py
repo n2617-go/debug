@@ -1,122 +1,87 @@
-"""
-VIXTWN 診斷腳本
-在 terminal 執行：python debug_vixtwn.py
-把輸出結果貼給我，就能確認問題在哪一步
-"""
-import requests
+import streamlit as st
+import yfinance as yf
+import pandas as pd
 from datetime import datetime, timedelta
-from bs4 import BeautifulSoup
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+# 頁面設定
+st.set_page_config(page_title="台指 VIX 數據監控", layout="wide")
 
-# =============================================
-# 方案 A：台灣期交所
-# =============================================
-print("=" * 50)
-print("【方案 A】台灣期交所 VIX 每日行情")
-print("=" * 50)
-try:
-    url = "https://www.taifex.com.tw/cht/3/viXDailyMarketReport"
-    res = requests.get(url, headers=HEADERS, timeout=15)
-    print(f"HTTP 狀態碼: {res.status_code}")
-    print(f"回應長度: {len(res.text)} bytes")
+def get_vix_data(source="yfinance"):
+    """
+    抓取台指 VIX 數據
+    """
+    try:
+        if source == "yfinance":
+            # ^VIXTWN 為 Yahoo Finance 台指 VIX 代號
+            vix = yf.Ticker("^VIXTWN")
+            df = vix.history(period="1mo") # 抓取一個月數據
+            if df.empty:
+                return None
+            # 整理格式：只取收盤價，並格式化日期
+            df = df[['Close']].rename(columns={'Close': 'VIX'})
+            df.index = df.index.date # 只保留日期部分
+            return df
+            
+        elif source == "FinMind":
+            from FinMind.data import DataLoader
+            api = DataLoader()
+            start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+            df = api.taiwan_vix(start_date=start_date)
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date']).dt.date
+                df = df.set_index('date')
+                return df[['close']].rename(columns={'close': 'VIX'})
+        return None
+    except Exception as e:
+        st.error(f"抓取錯誤: {e}")
+        return None
+
+# --- UI 介面 ---
+st.title("📑 台指 VIX 指數數據表")
+
+# 側邊欄控制
+with st.sidebar:
+    st.header("設定")
+    data_source = st.radio("選擇資料來源", ["yfinance", "FinMind"])
+    if st.button("刷新數據"):
+        st.rerun()
+
+# 執行抓取
+vix_df = get_vix_data(data_source)
+
+if vix_df is not None:
+    # 計算最新資訊
+    latest_val = vix_df['VIX'].iloc[-1]
+    prev_val = vix_df['VIX'].iloc[-2]
+    delta = latest_val - prev_val
     
-    soup = BeautifulSoup(res.text, "html.parser")
-    tables = soup.find_all("table")
-    print(f"找到 table 數量: {len(tables)}")
+    # 顯示指標卡
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("最新 VIX 點位", f"{latest_val:.2f}", f"{delta:.2f}")
+    with col2:
+        # 簡單的情緒標籤
+        if latest_val > 25:
+            label = "🔴 市場恐慌 (High Volatility)"
+        elif latest_val < 15:
+            label = "🟢 市場樂觀 (Low Volatility)"
+        else:
+            label = "🟡 波動正常"
+        st.write(f"### 當前狀態：{label}")
+
+    st.divider()
+
+    # 顯示數據表格
+    st.subheader(f"歷史數據明細 ({data_source})")
     
-    for i, table in enumerate(tables):
-        rows = table.find_all("tr")
-        print(f"\nTable[{i}] 共 {len(rows)} 行")
-        for j, row in enumerate(rows[:5]):  # 只印前 5 行
-            cols = [c.get_text(strip=True) for c in row.find_all("td")]
-            if cols:
-                print(f"  Row[{j}]: {cols}")
-except Exception as e:
-    print(f"❌ 方案 A 失敗: {type(e).__name__}: {e}")
+    # 將索引轉為字串方便閱讀，並降冪排列（最新的在上面）
+    display_df = vix_df.sort_index(ascending=False)
+    
+    st.dataframe(
+        display_df.style.format("{:.2f}"), # 格式化數值到小數點第二位
+        use_container_width=True,
+        height=500
+    )
 
-# =============================================
-# 方案 B：FinMind REST API
-# =============================================
-print("\n" + "=" * 50)
-print("【方案 B】FinMind API - TaiwanFuturesDaily / VIX")
-print("=" * 50)
-try:
-    start_dt = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-    url = "https://api.finmindtrade.com/api/v4/data"
-    params = {
-        "dataset": "TaiwanFuturesDaily",
-        "data_id": "VIX",
-        "start_date": start_dt,
-    }
-    res = requests.get(url, params=params, timeout=15)
-    print(f"HTTP 狀態碼: {res.status_code}")
-    data = res.json()
-    print(f"回應 msg: {data.get('msg')}")
-    records = data.get("data", [])
-    print(f"回傳筆數: {len(records)}")
-    if records:
-        print(f"最新一筆: {records[-1]}")
-    else:
-        print("⚠️ data 為空，嘗試其他 data_id...")
-        
-        # 列出所有可用的期貨代號（查 VIX 相關）
-        params2 = {
-            "dataset": "TaiwanFuturesDaily",
-            "start_date": start_dt,
-        }
-        res2 = requests.get(url, params=params2, timeout=15)
-        data2 = res2.json()
-        records2 = data2.get("data", [])
-        ids = list(set(r.get("futures_id","") for r in records2))
-        vix_ids = [x for x in ids if "VIX" in x.upper() or "vix" in x.lower()]
-        print(f"含 VIX 的代號: {vix_ids}")
-        print(f"所有代號（前 30 個）: {sorted(ids)[:30]}")
-except Exception as e:
-    print(f"❌ 方案 B 失敗: {type(e).__name__}: {e}")
-
-# =============================================
-# 方案 C：FinMind - TaiwanVariousIndicators
-# =============================================
-print("\n" + "=" * 50)
-print("【方案 C】FinMind API - TaiwanVariousIndicators5Seconds")
-print("=" * 50)
-try:
-    url = "https://api.finmindtrade.com/api/v4/data"
-    params = {
-        "dataset": "TaiwanVariousIndicators5Seconds",
-        "data_id": "VIXTWN",
-        "start_date": (datetime.now() - timedelta(days=5)).strftime('%Y-%m-%d'),
-    }
-    res = requests.get(url, params=params, timeout=15)
-    print(f"HTTP 狀態碼: {res.status_code}")
-    data = res.json()
-    print(f"回應 msg: {data.get('msg')}")
-    records = data.get("data", [])
-    print(f"回傳筆數: {len(records)}")
-    if records:
-        print(f"最新一筆: {records[-1]}")
-except Exception as e:
-    print(f"❌ 方案 C 失敗: {type(e).__name__}: {e}")
-
-# =============================================
-# 方案 D：Yahoo Finance ^TAIEX VIX 相關
-# =============================================
-print("\n" + "=" * 50)
-print("【方案 D】直接測試幾個 Yahoo Finance 代號")
-print("=" * 50)
-try:
-    import yfinance as yf
-    for symbol in ["^VIXTWN", "VIXTWN", "^TWII", "VIX.TW"]:
-        try:
-            hist = yf.Ticker(symbol).history(period="5d")
-            if not hist.empty:
-                print(f"✅ {symbol}: {round(hist['Close'].iloc[-1], 2)}")
-            else:
-                print(f"❌ {symbol}: 空資料")
-        except Exception as e:
-            print(f"❌ {symbol}: {e}")
-except Exception as e:
-    print(f"yfinance 整體失敗: {e}")
-
-print("\n診斷完成，請把以上輸出貼給 Claude。")
+else:
+    st.warning("無法取得數據，請檢查 API 或 Ticker 是否有效。")
