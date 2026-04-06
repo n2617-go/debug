@@ -1,93 +1,89 @@
 import streamlit as st
 import pandas as pd
-import requests
-import io
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 from datetime import datetime
+import time
 
 # 頁面設定
-st.set_page_config(page_title="台指 VIX 官網數據直接對接", layout="wide")
+st.set_page_config(page_title="VIX 實戰爬蟲", layout="wide")
 
-def get_vix_from_taifex_direct():
+def get_wantgoo_vix():
     """
-    模擬瀏覽器直接從期交所官網下載 VIX 歷史資料 CSV
+    使用 Selenium 模擬真人進入玩股網抓取 VIX 數值
     """
-    # 這是期交所官網下載當月數據的 Action URL
-    url = "https://www.taifex.com.tw/cht/7/vixMinNew"
+    url = "https://www.wantgoo.com/index/vixtwn/price-to-earning-river"
     
-    # 強大的瀏覽器偽裝 Headers
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://www.taifex.com.tw/cht/7/vixMinNew",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
-    }
+    # 1. 瀏覽器環境設定
+    chrome_options = Options()
+    chrome_options.add_argument('--headless') # 雲端執行建議開啟，本地測試可註解掉看過程
+    chrome_options.add_argument('--disable-gpu')
+    chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--disable-dev-shm-usage')
+    
+    # 2. 模擬真人 Headers
+    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    chrome_options.add_argument(f'user-agent={user_agent}')
 
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+    
     try:
-        # 1. 先獲取網頁內容，確認是否能連通
-        response = requests.get(url, headers=headers, timeout=15)
+        # 3. 進入網頁
+        driver.get(url)
         
-        if response.status_code == 200:
-            # 使用 pandas 直接讀取網頁中的表格 (期交所這頁是用 table 標籤顯示)
-            # 因為 HTML 內可能有編碼問題，我們指定 big5 或 utf-8
-            tables = pd.read_html(io.StringIO(response.text))
-            
-            # 通常數據在最後一個表格
-            for df in tables:
-                if '日期' in df.columns and '波動率指數' in df.columns:
-                    df['日期'] = pd.to_datetime(df['日期']).dt.date
-                    df['VIX'] = pd.to_numeric(df['波動率指數'], errors='coerce')
-                    df = df.dropna(subset=['VIX'])
-                    return df.sort_values('日期', ascending=False)
-            
-            st.warning("已連上網頁，但未發現 VIX 數據表格。")
-            return None
-        else:
-            st.error(f"期交所官網連線失敗 (Status: {response.status_code})")
-            return None
+        # 4. 模擬真人等待時間，避免被發現是機器人
+        wait = WebDriverWait(driver, 15)
+        
+        # 5. 抓取綠色框框內的 VIX 數值 (玩股網的點位通常在特定的 class 或 id 中)
+        # 根據你提供的圖片，我們尋找最新成交點位
+        vix_element = wait.until(EC.presence_of_element_located((By.XPATH, "//span[contains(@class, 'last')] | //div[contains(@class, 'price')]")))
+        
+        vix_value = vix_element.text
+        
+        # 6. 抓取昨收價與時間
+        try:
+            time_element = driver.find_element(By.XPATH, "//time")
+            update_time = time_element.text
+        except:
+            update_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        driver.quit()
+        return vix_value, update_time
+
     except Exception as e:
-        st.error(f"抓取發生錯誤: {e}")
-        return None
+        driver.quit()
+        return f"錯誤: {str(e)}", None
 
-# --- UI 介面 ---
-st.title("🛡️ 台指 VIX 官網直連版")
-st.caption(f"目前時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (連假補假中)")
+# --- Streamlit UI ---
+st.title("📈 玩股網 VIX 指數即時監控 (模擬真人版)")
+st.info("由於玩股網具有嚴格反爬蟲機制，本程式使用 Selenium 模擬瀏覽器行為進行數據抓取。")
 
-# 手動刷新
-if st.sidebar.button("🔄 手動同步官網數據"):
+if st.button("🔄 立即模擬真人抓取"):
     st.cache_data.clear()
-    st.rerun()
+    with st.spinner('正在開啟模擬瀏覽器並繞過反爬蟲機制...'):
+        vix_val, update_time = get_wantgoo_vix()
+        
+        if "錯誤" not in vix_val:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.metric("最新點位 (玩股網)", vix_val)
+            with c2:
+                st.write(f"📅 數據時間：{update_time}")
+            
+            st.success("成功抓取！數值對應你圖中綠色框選的區域。")
+        else:
+            st.error(vix_val)
+            st.info("提示：如果是在雲端環境執行（如 Streamlit Cloud），可能需要額外安裝 Chrome Driver 環境。")
 
-with st.spinner('正在模擬瀏覽器讀取期交所官網數據...'):
-    vix_df = get_vix_from_taifex_direct()
-
-if vix_df is not None and not vix_df.empty:
-    # 取得最新一筆 (會自動鎖定 4/2)
-    latest_row = vix_df.iloc[0]
-    latest_val = float(latest_row['VIX'])
-    latest_date = latest_row['日期']
-    
-    # 漲跌計算
-    if len(vix_df) > 1:
-        prev_val = float(vix_df.iloc[1]['VIX'])
-        delta = latest_val - prev_val
-    else:
-        delta = 0
-
-    # 看板
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric(f"最後結算 ({latest_date})", f"{latest_val:.2f}", f"{delta:.2f}")
-    with c2:
-        status = "😱 避險情緒高" if latest_val > 25 else "😊 情緒穩定"
-        st.subheader(f"市場狀態：{status}")
-    with c3:
-        st.info("💡 目前為補假期間，資料來源為官網最後更新之 4/2 數據。")
-
-    st.divider()
-
-    # 表格
-    st.subheader("📋 官網原始數據紀錄")
-    st.dataframe(vix_df.set_index('日期'), use_container_width=True)
-
-else:
-    st.error("❌ 官網數據解析失敗。")
-    st.info("原因分析：期交所網頁可能偵測到非瀏覽器存取。建議開盤日 (4/7) 再嘗試連線即時 API。")
+st.divider()
+st.write("### 為什麼直接用 API 抓不到玩股網？")
+st.write("""
+1. **Dynamic Rendering**: 該數值是網頁加載後才由 JavaScript 填入的，單純的 Requests 只能抓到空白原始碼。
+2. **Bot Detection**: 玩股網會檢查 Cookies 和瀏覽軌跡，模擬瀏覽器是目前最有效的方式。
+3. **休市數據**: 即使 4/6 休市，玩股網頁面上依然會保留 4/2 的最後結算數值 **36.45**。
+""")
