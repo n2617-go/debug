@@ -6,7 +6,6 @@ import io
 import os
 import re
 import time
-import json
 
 # --- 環境初始化 ---
 def ensure_env():
@@ -15,110 +14,83 @@ def ensure_env():
 
 ensure_env()
 
-# --- 核心辨識邏輯 ---
-
-def get_dual_channel_intel():
+def get_final_intel():
     """
-    通道 A: 雙重閾值掃描 (確保 DEFCON 4 浮現)
-    通道 B: 8x 超解析度 + 銳化 (確保 29% 不會辨識成 20%)
+    實施：DEFCON 與 百分比 雙區塊超解析度放大辨識
     """
     lvl, pct = 1, 0.0
-    raw_debug = ""
-    dbg_img_pct = None
+    status = st.status("🔍 執行全數據高解析度掃描...", expanded=True)
     
-    status = st.status("🚀 啟動超解析度雙通道偵察...", expanded=True)
     try:
         with sync_playwright() as p:
-            status.write("1. 建立廣域衛星連線...")
+            status.write("1. 建立廣域連線...")
             browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu'])
             page = browser.new_page(viewport={'width': 1920, 'height': 1080})
             page.goto("https://worldmonitor.app/", wait_until="domcontentloaded", timeout=60000)
-            # 等待 15 秒確保所有動畫與數據加載完成
             time.sleep(15) 
             
-            status.write("2. 抓取原始數據快照 (向左狂移 x:350)...")
+            # 抓取包含所有數據的關鍵區塊
             screenshot_bytes = page.screenshot(clip={'x': 350, 'y': 15, 'width': 1100, 'height': 100})
             browser.close()
             
-            # 轉換為灰階基礎圖
             img_org = Image.open(io.BytesIO(screenshot_bytes)).convert('L')
             
-            # --- 【通道 A】修復 DEFCON (嘗試兩種模式) ---
-            # 模式 1: 原始強化 (針對紅底白字)
-            img_a1 = ImageEnhance.Contrast(img_org).enhance(4.0)
-            raw_a1 = pytesseract.image_to_string(img_a1, config='--psm 6')
+            # --- 通道 A：專攻 DEFCON (實施 6 倍放大 + 高對比) ---
+            # 針對您的反饋，DEFCON 也需要放大才能讓 OCR 穿透框線
+            img_defcon = img_org.resize((img_org.width * 6, img_org.height * 6), Image.Resampling.LANCZOS)
+            img_defcon = ImageEnhance.Contrast(img_defcon).enhance(4.5)
+            img_defcon = img_defcon.filter(ImageFilter.SHARPEN)
+            # 使用模式 2 的二值化邏輯讓字體浮現
+            img_defcon_bin = ImageOps.invert(img_defcon).point(lambda x: 255 if x > 180 else 0, mode='1')
             
-            # 模式 2: 極限反轉二值化 (針對白底黑字，讓字浮現)
-            img_a2 = ImageOps.invert(img_org)
-            img_a2 = ImageEnhance.Contrast(img_a2).enhance(5.0)
-            img_a2 = img_a2.point(lambda x: 255 if x > 200 else 0, mode='1')
-            raw_a2 = pytesseract.image_to_string(img_a2, config='--psm 6')
+            raw_defcon = pytesseract.image_to_string(img_defcon, config='--psm 6')
+            raw_defcon_bin = pytesseract.image_to_string(img_defcon_bin, config='--psm 6')
             
-            # --- 【通道 B】修復百分比 (8x 超解析度 + 銳化) ---
-            # 針對 29% 誤判問題：提升至 8 倍放大並加入銳化濾鏡
+            # --- 通道 B：專攻百分比 (維持 8 倍放大 + 銳化) ---
             img_pct = img_org.resize((img_org.width * 8, img_org.height * 8), Image.Resampling.LANCZOS)
-            img_pct = img_pct.filter(ImageFilter.SHARPEN) 
-            img_pct = ImageEnhance.Contrast(img_pct).enhance(3.5)
+            img_pct = img_pct.filter(ImageFilter.SHARPEN)
             raw_pct = pytesseract.image_to_string(img_pct, config='--psm 6')
             
-            # 儲存通道 B 放大圖供驗證 9 與 0
+            # 儲存偵察圖供驗證
             buf = io.BytesIO()
-            img_pct.convert("RGB").save(buf, format="PNG")
-            dbg_img_pct = buf.getvalue()
+            img_defcon.save(buf, format="PNG")
+            dbg_img = buf.getvalue()
             
-            status.write("3. 整合關鍵特徵數據...")
+            status.write("3. 解析混合文字流...")
+            full_text = f"{raw_defcon} {raw_defcon_bin} {raw_pct}"
             
-            # 整合所有抓到的文字進行正則匹配
-            combined_text = f"{raw_a1} {raw_a2} {raw_pct}"
+            # 強力正則表達式解析
+            lvl_match = re.search(r'(?:defcon|d\w+n|et)\s*[:|l|!|i]?\s*([1-5])', full_text, re.IGNORECASE)
+            pct_match = re.search(r'(\d+)\s*%', raw_pct)
             
-            # 提取級別 (DEFCON)
-            lvl_m = re.search(r'(?:defcon|d\w+n|et)\s*[:|l|!|i]?\s*([1-5])', combined_text, re.IGNORECASE)
-            # 提取百分比 (PIZZA)
-            pct_m = re.search(r'(\d+)\s*%', raw_pct)
+            if lvl_match: lvl = int(lvl_match.group(1))
+            if pct_match: pct = float(pct_match.group(1))
             
-            if lvl_m: lvl = int(lvl_m.group(1))
-            if pct_m: pct = float(pct_m.group(1))
+            raw_debug = f"--- DEFCON 放大通道 ---\n{raw_defcon}\n\n--- DEFCON 二值化 ---\n{raw_defcon_bin}\n\n--- 百分比 8x ---\n{raw_pct}"
             
-            raw_debug = f"--- DEFCON 模式1 ---\n{raw_a1}\n\n--- DEFCON 模式2 (二值化) ---\n{raw_a2}\n\n--- 百分比 8x ---\n{raw_pct}"
+            status.update(label=f"✅ 完成辨識: LEVEL {lvl} | {int(pct)}%", state="complete", expanded=False)
+            return lvl, pct, raw_debug, dbg_img
             
-            status.update(label=f"✅ 偵察成功 (級別: {lvl} / 指數: {pct}%)", state="complete", expanded=False)
-            return lvl, pct, raw_debug, dbg_img_pct
-
     except Exception as e:
-        status.update(label=f"❌ 偵察失敗: {e}", state="error")
+        status.update(label=f"❌ 錯誤: {e}", state="error")
         return None, None, str(e), None
 
-# --- Streamlit UI 介面 ---
-st.set_page_config(page_title="Intel Dual-Channel Pro", page_icon="🛡️")
+# --- UI 介面 ---
+st.title("🛡️ 數據全自動掃描 (全區放大版)")
 
-st.title("🛡️ 全域偵察系統 (超解析度進化版)")
-st.markdown("針對 **DEFCON 4 (浮現技術)** 與 **29% (8x 放大)** 優化的穩定版本。")
-
-if st.button("🛰️ 啟動雙通道數據更新", use_container_width=True):
-    res_lvl, res_pct, res_raw, res_img = get_dual_channel_intel()
-    if res_lvl is not None:
-        st.session_state['intel'] = {
-            "lvl": res_lvl,
-            "pct": res_pct,
-            "raw": res_raw,
-            "img": res_img
-        }
+if st.button("🛰️ 啟動級別與指數同步偵察", use_container_width=True):
+    lvl, pct, raw, dbg_img = get_final_intel()
+    if lvl is not None:
+        st.session_state['data'] = {"lvl": lvl, "pct": pct, "raw": raw, "img": dbg_img}
         st.rerun()
 
-if 'intel' in st.session_state:
-    data = st.session_state['intel']
+if 'data' in st.session_state:
+    d = st.session_state['data']
+    st.metric("當前警戒級別", f"DEFCON {d['lvl']}")
+    st.metric("披薩指數 (PIZZA INDEX)", f"{int(d['pct'])}%")
     
-    # 數據面板
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("DEFCON 級別", f"LEVEL {data['lvl']}")
-    with col2:
-        st.metric("披薩指數 (PIZZA INDEX)", f"{int(data['pct'])}%")
+    with st.expander("🕵️ 觀察 DEFCON 放大畫面"):
+        st.image(d['img'], caption="這是在 6 倍放大下嘗試抓取的 DEFCON 區域")
     
-    # 驗證區塊
-    with st.expander("🔍 驗證 8x 超解析度畫面 (解決 9/0 誤判)"):
-        st.image(data['img'], caption="8倍放大 + 銳化處理後的細節")
-        st.info("💡 請確認圖中的 9 是否勾勒清晰。")
-
-    with st.expander("📄 原始文字偵察流 (除錯用)"):
-        st.code(data['raw'])
+    with st.expander("📄 原始偵察文字"):
+        st.code(d['raw'])
