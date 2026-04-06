@@ -1,10 +1,6 @@
-libtesseract-dev
 tesseract-ocr
-tesseract-ocr-chi-tra
-libevent-2.1-7
-libgnome-keyring0
-libnotify4
-libxslt1.1
+tesseract-ocr-eng
+libtesseract-dev
 libnss3
 libxss1
 libasound2
