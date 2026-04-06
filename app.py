@@ -1,67 +1,129 @@
 import streamlit as st
-import requests
-import pandas as pd
+from playwright.sync_api import sync_playwright
+import time
 from datetime import datetime
 
-st.set_page_config(page_title="VIX 數據直連系統", layout="wide")
+# --- 頁面設定 ---
+st.set_page_config(page_title="VIX 指數自動監控", layout="wide")
 
-def get_vix_via_api():
-    """繞過網頁介面，直接請求期交所後台 JSON 數據"""
-    # 這是期交所後台真正的數據接口 (API)
-    api_url = "https://mis.taifex.com.tw/futures/api/getQuotesList"
+def get_vix_data_final():
+    """整合 Cookie 注入與 JS 強制點擊的掃描邏輯"""
+    # 數據分頁網址
+    target_url = "https://mis.taifex.com.tw/futures/VolatilityQuotes/"
     
-    # 模擬瀏覽器標頭，避免被當成爬蟲
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-        "Content-Type": "application/json",
-        "Referer": "https://mis.taifex.com.tw/futures/VolatilityQuotes/"
-    }
+    # 進度提示
+    progress_bar = st.progress(0)
+    status_text = st.empty()
     
-    # 請求參數：指定要抓取 VIX (台指選擇權波動率指數)
-    payload = {
-        "MarketType": "4",
-        "SymbolType": "F",
-        "Kind": "I",
-        "SymbolID": "VIXTWN"
-    }
+    vix_val = "N/A"
+    shot = None
+    success = False
 
     try:
-        # 發送 POST 請求
-        response = requests.post(api_url, json=payload, headers=headers, timeout=15)
-        data = response.json()
-        
-        # 解析 JSON 結構
-        # 數據通常在 data['RtData']['QuoteList'] 裡面
-        if data.get('RtList'):
-            vix_item = data['RtList'][0]
-            vix_val = vix_item.get('DispPrice', 'N/A') # 這就是我們要的 36.45
-            update_time = vix_item.get('DispTime', '')
-            return vix_val, update_time, True
-        else:
-            return "數據格式變更", "", False
+        with sync_playwright() as p:
+            status_text.text("1/4 啟動瀏覽器並注入通行證...")
+            progress_bar.progress(25)
+            
+            # 啟動參數優化
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu"])
+            
+            # 關鍵：手動塞入 Cookie，讓網頁跳過免責聲明按鈕
+            context = browser.new_context(viewport={'width': 1280, 'height': 800})
+            context.add_cookies([{
+                "name": "isDisclaimerConfirmed", 
+                "value": "true", 
+                "domain": "mis.taifex.com.tw", 
+                "path": "/"
+            }])
+            
+            page = context.new_page()
+            
+            # 2. 進入頁面
+            status_text.text("2/4 前往行情頁面...")
+            progress_bar.progress(50)
+            page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+            
+            # 3. 預防機制：萬一 Cookie 沒生效，執行 JS 顏色辨識點擊
+            page.evaluate("""
+                () => {
+                    const buttons = document.querySelectorAll('button');
+                    for (const btn of buttons) {
+                        const style = window.getComputedStyle(btn);
+                        // 尋找橘色背景按鈕 (免責聲明按鈕)
+                        if (style.backgroundColor.includes('rgb(255') || btn.className.includes('orange')) {
+                            btn.click();
+                        }
+                    }
+                }
+            """)
+            
+            # 等待數據 AJAX 加載
+            time.sleep(5) 
+
+            # 4. 暴力搜尋 VIX 數值 (不依賴中文定位)
+            status_text.text("3/4 辨識數值座標...")
+            progress_bar.progress(75)
+            
+            # 抓取表格中所有格子的文字
+            cells = page.query_selector_all("td")
+            for cell in cells:
+                text = cell.inner_text().strip()
+                # 辨識邏輯：數字、有小數點、長度短 (避開日期或其他干擾)
+                if text.replace('.', '', 1).isdigit() and '.' in text and len(text) < 7:
+                    vix_val = text
+                    shot = cell.screenshot() # 局部截圖
+                    success = True
+                    break
+            
+            if not success:
+                # 若找不到數值，抓取全螢幕供除錯
+                shot = page.screenshot()
+                vix_val = "偵測到頁面，但未發現數值特徵"
+
+            status_text.text("4/4 完成掃描！")
+            progress_bar.progress(100)
             
     except Exception as e:
-        return f"連線失敗: {str(e)}", "", False
+        vix_val = f"系統異常: {str(e)}"
+    finally:
+        progress_bar.empty()
+        status_text.empty()
 
-# --- Streamlit UI ---
-st.title("🚀 VIX 數據直連系統 (API 突破版)")
-st.markdown("此版本**捨棄瀏覽器模擬**，直接從期交所數據接口獲取數值，完全避開按鈕點擊與亂碼問題。")
+    return vix_val, shot, success
 
-if st.button("⚡ 獲取最新 VIX 指數"):
-    with st.spinner("正在直連數據源..."):
-        val, update_t, ok = get_vix_via_api()
-        
-        if ok:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("台指 VIX 指數", val)
-            with col2:
-                st.info(f"📅 數據時間：{update_t}")
+# --- Streamlit UI 介面 ---
+st.title("🛡️ VIX 指數自動辨識系統")
+st.markdown("本系統採用 **Cookie 注入** 與 **顏色特徵定位** 技術，可繞過期交所免責聲明並解決伺服器亂碼問題。")
+
+# 側邊欄顯示
+with st.sidebar:
+    st.header("系統狀態")
+    st.write("🌍 運行環境: Streamlit Cloud")
+    st.write("🛠️ 技術細節: Playwright + JS Injection")
+
+if st.button("🚀 獲取最新 VIX 指數", use_container_width=True):
+    val, img, ok = get_vix_data_final()
+    
+    if ok:
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.metric("台指 VIX 指數", val)
+            st.write(f"⏱️ 擷取時間：{datetime.now().strftime('%H:%M:%S')}")
             
-            st.success("✅ 成功繞過免責聲明與 Cloudflare 檢測！")
-        else:
-            st.error(f"❌ 擷取失敗：{val}")
-            st.warning("如果直連失敗，代表 API 接口可能暫時變更，請回報檢查。")
+            # 簡易警示邏輯
+            try:
+                if float(val) > 25: st.warning("⚠️ 市場波動性升高")
+                else: st.success("✅ 市場情緒平穩")
+            except: pass
+            
+        with col2:
+            st.write("### 📍 數據來源快照")
+            st.image(img, caption=f"網頁實際抓取到的數值：{val}")
+    else:
+        st.error(f"掃描失敗：{val}")
+        if img:
+            st.write("### 📸 偵錯截圖 (輔助判斷錯誤原因)")
+            st.image(img)
 
 st.divider()
-st.caption("技術原理：不掃描網頁座標，直接攔截網頁背後的 JSON 數據流。")
+st.caption("註：本工具僅供技術研究使用，實際數據請以期交所公告為準。")
