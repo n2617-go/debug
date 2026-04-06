@@ -1,87 +1,114 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
-from datetime import datetime, timedelta
+import requests
+from io import StringIO
+from datetime import datetime
 
 # 頁面設定
-st.set_page_config(page_title="台指 VIX 數據監控", layout="wide")
+st.set_page_config(page_title="台指 VIX 監控中心", layout="wide")
 
-def get_vix_data(source="yfinance"):
+def get_vix_from_taifex():
     """
-    抓取台指 VIX 數據
+    從台灣期交所 (TAIFEX) 抓取台指 VIX 指數歷史資料
+    連結：https://www.taifex.com.tw/cht/7/getVixDailyCSV
     """
+    url = "https://www.taifex.com.tw/cht/7/getVixDailyCSV"
     try:
-        if source == "yfinance":
-            # ^VIXTWN 為 Yahoo Finance 台指 VIX 代號
-            vix = yf.Ticker("^VIXTWN")
-            df = vix.history(period="1mo") # 抓取一個月數據
-            if df.empty:
-                return None
-            # 整理格式：只取收盤價，並格式化日期
-            df = df[['Close']].rename(columns={'Close': 'VIX'})
-            df.index = df.index.date # 只保留日期部分
-            return df
+        # 下載資料
+        response = requests.get(url)
+        response.encoding = 'utf-8' # 確保中文不亂碼
+        
+        if response.status_code == 200:
+            # 讀取 CSV (期交所的 CSV 格式：日期,收盤指數)
+            # skiprows=1 是因為第一行通常是標題或宣告
+            df = pd.read_csv(StringIO(response.text))
             
-        elif source == "FinMind":
-            from FinMind.data import DataLoader
-            api = DataLoader()
-            start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-            df = api.taiwan_vix(start_date=start_date)
-            if not df.empty:
-                df['date'] = pd.to_datetime(df['date']).dt.date
-                df = df.set_index('date')
-                return df[['close']].rename(columns={'close': 'VIX'})
-        return None
+            # 1. 清理資料：移除空格、確保欄位正確
+            df.columns = [c.strip() for c in df.columns]
+            
+            # 2. 轉換日期格式 (期交所格式通常是 YYYY/MM/DD)
+            df['日期'] = pd.to_datetime(df['日期']).dt.date
+            
+            # 3. 處理數值 (確保收盤指數是 float)
+            df['收盤指數'] = pd.to_numeric(df['收盤指數'], errors='coerce')
+            
+            # 4. 移除空值並重新排序 (最新日期在後，方便計算)
+            df = df.dropna().sort_values('日期')
+            
+            # 5. 設定索引
+            df = df.set_index('日期')
+            return df[['收盤指數']].rename(columns={'收盤指數': 'VIX'})
+            
+        else:
+            st.error(f"期交所伺服器回應錯誤: {response.status_code}")
+            return None
     except Exception as e:
-        st.error(f"抓取錯誤: {e}")
+        st.error(f"連線失敗: {e}")
         return None
 
 # --- UI 介面 ---
-st.title("📑 台指 VIX 指數數據表")
+st.title("📊 台指 VIX (VIXTWN) 數據監控")
+st.caption(f"數據來源：台灣期交所 (TAIFEX) | 更新時間：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
 # 側邊欄控制
 with st.sidebar:
-    st.header("設定")
-    data_source = st.radio("選擇資料來源", ["yfinance", "FinMind"])
-    if st.button("刷新數據"):
+    st.header("功能選單")
+    if st.button("🔄 立即更新數據"):
+        st.cache_data.clear() # 清除快取強制重新抓取
         st.rerun()
 
-# 執行抓取
-vix_df = get_vix_data(data_source)
+# 獲取數據 (使用快取避免頻繁請求)
+@st.cache_data(ttl=3600) # 每小時自動過期一次
+def load_data():
+    return get_vix_from_taifex()
 
-if vix_df is not None:
-    # 計算最新資訊
+vix_df = load_data()
+
+if vix_df is not None and not vix_df.empty:
+    # 提取數據 (最新的在最後一行)
     latest_val = vix_df['VIX'].iloc[-1]
     prev_val = vix_df['VIX'].iloc[-2]
     delta = latest_val - prev_val
     
-    # 顯示指標卡
-    col1, col2 = st.columns(2)
+    # 1. 顯示指標卡片
+    col1, col2, col3 = st.columns(3)
+    
     with col1:
-        st.metric("最新 VIX 點位", f"{latest_val:.2f}", f"{delta:.2f}")
+        st.metric("最新 VIX 指數", f"{latest_val:.2f}", f"{delta:.2f}")
+    
     with col2:
-        # 簡單的情緒標籤
-        if latest_val > 25:
-            label = "🔴 市場恐慌 (High Volatility)"
-        elif latest_val < 15:
-            label = "🟢 市場樂觀 (Low Volatility)"
+        # 判斷市場情緒
+        if latest_val >= 30:
+            status = "😱 極度恐慌 (避險升溫)"
+            color = "red"
+        elif latest_val >= 20:
+            status = "😟 波動增加"
+            color = "orange"
         else:
-            label = "🟡 波動正常"
-        st.write(f"### 當前狀態：{label}")
+            status = "😊 市場平穩"
+            color = "green"
+        st.subheader(f"當前狀態：:{color}[{status}]")
+        
+    with col3:
+        st.write(f"**資料筆數：** {len(vix_df)} 筆")
+        st.write(f"**最近更新日：** {vix_df.index[-1]}")
 
     st.divider()
 
-    # 顯示數據表格
-    st.subheader(f"歷史數據明細 ({data_source})")
+    # 2. 顯示數據表格 (降冪排序，最新在最上方)
+    st.subheader("📋 歷史數據清單")
     
-    # 將索引轉為字串方便閱讀，並降冪排列（最新的在上面）
+    # 格式化表格
     display_df = vix_df.sort_index(ascending=False)
     
     st.dataframe(
-        display_df.style.format("{:.2f}"), # 格式化數值到小數點第二位
+        display_df.style.format("{:.2f}")
+                  .background_gradient(cmap="Reds", subset=["VIX"]), # 數值越高顏色越紅
         use_container_width=True,
-        height=500
+        height=600
     )
 
 else:
-    st.warning("無法取得數據，請檢查 API 或 Ticker 是否有效。")
+    st.warning("⚠️ 無法獲取期交所數據。")
+    st.info("請檢查您的網路連線，或稍後再試。")
+
