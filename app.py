@@ -19,79 +19,98 @@ ensure_env()
 PIZZA_FILE = "intelligence_data.json"
 tz_tw = pytz.timezone('Asia/Taipei')
 
-# --- 核心：穩定廣域掃描技術 ---
+# --- 核心：雙重影像辨識技術 ---
 
-def get_pizza_intel_stable():
+def get_dual_channel_intel():
     """
-    策略：維持向左狂移 (x:350) + 超廣角 (width:1200)
-    優點：無論數據偏左或偏右，都能完整覆蓋
+    技術：同時對同一張截圖進行兩種不同的影像強化處理
     """
     lvl, pct = 1, 0.0
-    raw_text = ""
-    debug_image = None
+    raw_text_defcon = ""
+    raw_text_pct = ""
     
-    status = st.status("🛰️ 正在執行穩定廣域偵察...", expanded=True)
+    status = st.status("🚀 啟動雙通道數據偵察...", expanded=True)
     try:
         with sync_playwright() as p:
-            status.write("1. 正在登入衛星系統...")
+            status.write("1. 建立廣域衛星連線...")
             browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu'])
-            # 使用固定 Full HD 解析度，確保佈局一致性
             page = browser.new_page(viewport={'width': 1920, 'height': 1080})
             page.goto("https://worldmonitor.app/", wait_until="domcontentloaded", timeout=60000)
             time.sleep(12) 
             
-            status.write("2. 執行超廣角快照 (涵蓋左側到右側數據區)...")
-            # 座標設定：x 從 350 開始，寬度加長到 1200
-            # 這樣能保證 1000028190.jpg 的 DEFCON 與 1000028187.jpg 的 % 都在裡面
+            status.write("2. 執行超廣角數據快照 (x:350, width:1200)...")
+            # 維持向左偏移的廣域掃描，確保兩者皆入鏡
             screenshot_bytes = page.screenshot(clip={'x': 350, 'y': 15, 'width': 1200, 'height': 100})
             browser.close()
             
-            # --- 影像優化：針對白底文字強化 ---
-            img = Image.open(io.BytesIO(screenshot_bytes)).convert('L')
-            # 放大 1.5 倍以提升細節辨識
-            img = img.resize((int(img.width * 1.5), int(img.height * 1.5)), Image.Resampling.LANCZOS)
+            img_org = Image.open(io.BytesIO(screenshot_bytes)).convert('L')
+            # 統一放大 1.5 倍提升 OCR 精度
+            img_zoomed = img_org.resize((int(img_org.width * 1.5), int(img_org.height * 1.5)), Image.Resampling.LANCZOS)
             
-            # 使用中度二值化，確保 DEFCON 字跡清晰且 % 不會消失
-            img = ImageEnhance.Contrast(img).enhance(3.5)
-            fn = lambda x : 255 if x > 170 else 0
-            img = img.point(fn, mode='1')
+            # --- 通道 A：專攻 DEFCON (極限二值化) ---
+            # 針對 1000028190.jpg 的成功經驗
+            img_defcon = ImageEnhance.Contrast(img_zoomed).enhance(4.0)
+            img_defcon = img_defcon.point(lambda x : 255 if x > 180 else 0, mode='1')
+            raw_text_defcon = pytesseract.image_to_string(img_defcon, config='--psm 6')
             
+            # --- 通道 B：專攻百分比 (中度強化) ---
+            # 針對 1000028191.jpg 的成功經驗
+            img_pct = ImageEnhance.Contrast(img_zoomed).enhance(2.5)
+            raw_text_pct = pytesseract.image_to_string(img_pct, config='--psm 6')
+            
+            # 儲存除錯影像（合併兩通道）
+            debug_img = Image.new('L', (img_defcon.width, img_defcon.height * 2))
+            debug_img.paste(img_defcon.convert('L'), (0, 0))
+            debug_img.paste(img_pct.convert('L'), (0, img_defcon.height))
             buf = io.BytesIO()
-            img.convert("RGB").save(buf, format="PNG")
-            debug_image = buf.getvalue()
+            debug_img.convert("RGB").save(buf, format="PNG")
             
-            # 執行 OCR
-            raw_text = pytesseract.image_to_string(img, config='--psm 6').strip()
-            
-            status.write("3. 數據解析中...")
-            # 同時抓取兩個關鍵數值
-            lvl_m = re.search(r'(?:defcon|gd|d\w+n|et)\s*[:|l|!|i]?\s*([1-5])', raw_text, re.IGNORECASE)
-            pct_m = re.search(r'(\d+)\s*%', raw_text)
+            status.write("3. 雙通道數據結合...")
+            # 分別從不同通道提取數據
+            lvl_m = re.search(r'(?:defcon|gd|d\w+n|et|1|2|3|4|5)\s*([1-5])', raw_text_defcon, re.IGNORECASE)
+            pct_m = re.search(r'(\d+)\s*%', raw_text_pct)
             
             if lvl_m: lvl = int(lvl_m.group(1))
             if pct_m: pct = float(pct_m.group(1))
             
-            status.update(label=f"✅ 偵察成功: {lvl} 級 / {int(pct)}%", state="complete", expanded=False)
-            return lvl, pct, raw_text, debug_image
+            status.update(label=f"✅ 整合成功: DEFCON {lvl} | {int(pct)}%", state="complete", expanded=False)
+            return lvl, pct, f"DEFCON_RAW: {raw_text_defcon}\n\nPCT_RAW: {raw_text_pct}", buf.getvalue()
+            
     except Exception as e:
-        status.update(label=f"❌ 偵察失敗: {e}", state="error")
+        status.update(label=f"❌ 辨識失敗: {e}", state="error")
         return None, None, str(e), None
 
-# --- UI 呈現 ---
-st.title("🛡️ 全域穩定偵察系統")
+# --- UI 介面 ---
+st.set_page_config(page_title="Intel Dual-Channel", page_icon="🛡️")
+st.title("🛡️ 雙通道穩定偵察系統")
 
-if st.button("🛰️ 立即同步全域數據", use_container_width=True):
-    lvl, pct, raw, dbg_img = get_pizza_intel_stable()
+if st.button("🛰️ 啟動雙重方法同步更新", use_container_width=True):
+    lvl, pct, raw, dbg_img = get_dual_channel_intel()
     if lvl is not None:
-        st.session_state['stable_lvl'] = lvl
-        st.session_state['stable_pct'] = pct
-        st.session_state['stable_shot'] = dbg_img
+        st.session_state['intel_data'] = {"lvl": lvl, "pct": pct, "raw": raw, "img": dbg_img}
         st.rerun()
 
-if 'stable_lvl' in st.session_state:
-    c1, c2 = st.columns(2)
-    c1.metric("DEFCON 級別", st.session_state['stable_lvl'])
-    c2.metric("披薩指數", f"{int(st.session_state['stable_pct'])}%")
+if 'intel_data' in st.session_state:
+    data = st.session_state['intel_data']
     
-    with st.expander("🕵️ 查看廣域辨識影像"):
-        st.image(st.session_state['stable_shot'], caption="向左狂移掃描結果")
+    # 呈現最新數據面板
+    st.markdown(f"""
+        <div style="background-color:#0e1117; border-radius:10px; padding:20px; border:1px solid #333; text-align:center;">
+            <div style="display:inline-block; width:45%;">
+                <small style="color:#888;">DEFCON LEVEL</small><br>
+                <b style="font-size:48px; color:#FF4B4B;">{data['lvl']}</b>
+            </div>
+            <div style="display:inline-block; width:5%; font-size:30px; color:#444; vertical-align:super;">|</div>
+            <div style="display:inline-block; width:45%;">
+                <small style="color:#888;">PIZZA INDEX</small><br>
+                <b style="font-size:48px; color:#1E90FF;">{int(data['pct'])}%</b>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    with st.expander("🕵️ 查看雙通道處理視覺圖"):
+        st.image(data['img'], caption="上圖：DEFCON 通道 | 下圖：百分比通道")
+        st.info("💡 只要上圖能看到數字、下圖能看到百分比，系統就能完美結合。")
+    
+    with st.expander("📄 檢視原始辨識字串"):
+        st.code(data['raw'])
