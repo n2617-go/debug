@@ -5,3 +5,10 @@ pytz
 selenium 
 webdriver-manager
 playwright
+pytesseract
+pillow
+plotly
+yfinance
+FinMind
+tqdm
+lxml
