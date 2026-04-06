@@ -1,7 +1,5 @@
-streamlit
-pandas
-requests
+beautifulsoup4 
+requests 
 yfinance
-streamlit-cookies-manager
-requests-cache
-cryptography
+python 
+debug_vixtwn.py
